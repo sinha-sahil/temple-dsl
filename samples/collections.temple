@@ -1,0 +1,10 @@
+# collections — map, filter, and fold over an input array
+#
+# Bounded iteration: each method walks the input list exactly once.
+# A lambda is `param -> expr`, or `(p1, p2) -> expr` for two parameters.
+{
+  "all_skus":    {{ input.cart.items.map(it -> it.sku) }},
+  "in_stock":    {{ input.cart.items.filter(it -> it.in_stock).map(it -> it.sku) }},
+  "line_items":  {{ input.cart.items.map(it -> { "sku": it.sku, "total": it.qty * it.price }) }},
+  "order_total": {{ input.cart.items.fold(0, (sum, it) -> sum + it.qty * it.price) }}
+}

@@ -1,0 +1,23 @@
+# receipt — variables, conditionals, self-reference, decimal-exact math
+#
+# `let` declares reusable variables; `this.` reads sibling output keys;
+# `when` and `?:` choose values; arithmetic is decimal-exact.
+
+let tier = when {
+  input.customer.lifetime_spend >= 1000: 'gold'
+  input.customer.lifetime_spend >= 250:  'silver'
+  else:                                  'standard'
+}
+
+let discount_rate = tier == 'gold' ? 0.15 : 0.05
+
+{
+  "customer":    {{ input.customer.name }},
+  "tier":        {{ tier }},
+  "subtotal":    {{ input.cart.subtotal }},
+  "discount":    {{ input.cart.subtotal * discount_rate }},
+  "tax":         {{ (input.cart.subtotal - this.discount) * input.cart.tax_rate }},
+  "total":       {{ input.cart.subtotal - this.discount + this.tax }},
+  "coupon_note": "Applied coupon: {{ input.cart?.coupon ?? 'none' }}",
+  "express":     {{ input.shipping?.express ?? false }}
+}

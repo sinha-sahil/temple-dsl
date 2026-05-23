@@ -1,0 +1,19 @@
+# http-request — an HTTP request template
+#
+# Interpolation in the URL and headers (quoted holes -> strings);
+# computed body fields (bare holes -> typed values).
+{
+  "method": "POST",
+  "url":    "https://api.shop.example/v2/customers/{{ input.customer.id }}/orders",
+  "headers": {
+    "Authorization":   "Bearer {{ input.auth.token }}",
+    "Content-Type":    "application/json",
+    "Idempotency-Key": "{{ input.request_id }}"
+  },
+  "body": {
+    "currency": {{ input.cart.currency }},
+    "subtotal": {{ input.cart.subtotal }},
+    "tax":      {{ input.cart.subtotal * input.cart.tax_rate }},
+    "total":    {{ input.cart.subtotal * (1 + input.cart.tax_rate) }}
+  }
+}

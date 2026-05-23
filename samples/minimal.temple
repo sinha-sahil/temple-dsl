@@ -1,0 +1,6 @@
+# minimal — a flat object with direct path access; no preamble
+{
+  "id":     {{ input.id }},
+  "name":   {{ input.profile.name }},
+  "active": {{ input.profile.status == 'active' }}
+}

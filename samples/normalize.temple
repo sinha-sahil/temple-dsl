@@ -1,0 +1,13 @@
+# normalize — reshape a third-party API response into our canonical shape
+#
+# Plain access (input.data.user.id) is for fields we require.
+# `?.` marks a field the upstream may omit; `??` supplies the fallback.
+
+{
+  "user_id":   {{ input.data.user.id }},
+  "full_name": "{{ input.data.user.first_name }} {{ input.data.user.last_name }}",
+  "email":     {{ input.data.user?.email ?? 'unknown' }},
+  "verified":  {{ input.data.user?.verified ?? false }},
+  "plan":      {{ input.data?.plan ?? 'free' }},
+  "country":   {{ input.data.user?.country ?? 'XX' }}
+}

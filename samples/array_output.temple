@@ -1,0 +1,9 @@
+# array-output — the top-level output is an array
+#
+# Output shape is static — Temple has no loops, so an array template
+# produces a fixed number of elements.
+[
+  {{ input.point.x }},
+  {{ input.point.y }},
+  {{ input.point?.z ?? 0 }}
+]

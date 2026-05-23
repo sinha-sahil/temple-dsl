@@ -1,0 +1,9 @@
+# scalar-output — the whole template is one expression
+#
+# Useful as the expression layer of a rule engine: render it into a
+# `bool` and you have a reusable, data-driven predicate.
+{{
+  input.user.age >= 18
+  && input.user.country == 'US'
+  && (input.account?.verified ?? false)
+}}
