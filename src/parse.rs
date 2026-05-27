@@ -85,10 +85,34 @@ pub struct PathSegment {
     pub optional: bool,
 }
 
-pub fn parse(src: &str) -> Result<OutNode, Vec<CompileError>> {
+#[derive(Debug, Clone)]
+pub struct Module {
+    pub lets: Vec<LetBinding>,
+    pub output: OutNode,
+}
+
+#[derive(Debug, Clone)]
+pub struct LetBinding {
+    pub name: SmolStr,
+    pub expr: Expr,
+    pub span: Span,
+}
+
+pub fn parse(src: &str) -> Result<Module, Vec<CompileError>> {
     let mut p = Parser::new(src);
-    p.skip_ws();
-    let node = match p.parse_output() {
+    let mut lets = Vec::new();
+    loop {
+        p.skip_ws();
+        if !p.matches_ident("let") {
+            break;
+        }
+        let binding = match p.parse_let_binding() {
+            Ok(b) => b,
+            Err(e) => return Err(vec![e]),
+        };
+        lets.push(binding);
+    }
+    let output = match p.parse_output() {
         Ok(n) => n,
         Err(e) => return Err(vec![e]),
     };
@@ -102,7 +126,7 @@ pub fn parse(src: &str) -> Result<OutNode, Vec<CompileError>> {
             span: Span::new(p.pos, p.pos + 1),
         }]);
     }
-    Ok(node)
+    Ok(Module { lets, output })
 }
 
 struct Parser<'a> {
@@ -166,7 +190,7 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             Err(CompileError::Syntax {
-                message: format!("expected '{}'", s),
+                message: format!("expected '{s}'"),
                 span: Span::new(self.pos, self.pos + s.len()),
             })
         }
@@ -496,8 +520,7 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(b'-') {
             let next = self.peek_at(1);
             let is_number_literal = matches!(next, Some(b'0'..=b'9'))
-                || (next == Some(b'.')
-                    && self.peek_at(2).is_some_and(|b| b.is_ascii_digit()));
+                || (next == Some(b'.') && self.peek_at(2).is_some_and(|b| b.is_ascii_digit()));
             if !is_number_literal {
                 self.pos += 1;
                 self.skip_ws();
@@ -572,7 +595,7 @@ impl<'a> Parser<'a> {
                         span: ident_span,
                     }),
                     "when" => self.parse_when_body(ident_start),
-                    "input" => {
+                    _ => {
                         let mut segments = vec![PathSegment {
                             name: ident,
                             span: ident_span,
@@ -609,10 +632,6 @@ impl<'a> Parser<'a> {
                             span: Span::new(ident_start, self.pos),
                         })
                     }
-                    other => Err(CompileError::Syntax {
-                        message: format!("unknown identifier '{}'", other),
-                        span: ident_span,
-                    }),
                 }
             }
             Some(c) => Err(CompileError::Syntax {
@@ -624,6 +643,29 @@ impl<'a> Parser<'a> {
                 span: Span::new(self.pos, self.pos),
             }),
         }
+    }
+
+    fn parse_let_binding(&mut self) -> Result<LetBinding, CompileError> {
+        let start = self.pos;
+        self.pos += "let".len();
+        self.skip_ws();
+        let name_start = self.pos;
+        let name = self.read_ident();
+        if name.is_empty() {
+            return Err(CompileError::Syntax {
+                message: "expected name after 'let'".into(),
+                span: Span::new(name_start, name_start + 1),
+            });
+        }
+        self.skip_ws();
+        self.expect(b'=')?;
+        self.skip_ws();
+        let expr = self.parse_expr()?;
+        Ok(LetBinding {
+            name,
+            expr,
+            span: Span::new(start, self.pos),
+        })
     }
 
     fn parse_when_body(&mut self, when_start: usize) -> Result<Expr, CompileError> {
@@ -770,16 +812,14 @@ impl<'a> Parser<'a> {
             }
         }
         let mut is_decimal = false;
-        if self.peek() == Some(b'.') {
-            if self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
-                is_decimal = true;
-                self.pos += 1;
-                while let Some(b) = self.peek() {
-                    if b.is_ascii_digit() {
-                        self.pos += 1;
-                    } else {
-                        break;
-                    }
+        if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
+            is_decimal = true;
+            self.pos += 1;
+            while let Some(b) = self.peek() {
+                if b.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
                 }
             }
         }
@@ -788,14 +828,14 @@ impl<'a> Parser<'a> {
             text.parse::<Decimal>()
                 .map(Value::Decimal)
                 .map_err(|e| CompileError::Syntax {
-                    message: format!("invalid decimal '{}': {}", text, e),
+                    message: format!("invalid decimal '{text}': {e}"),
                     span: Span::new(start, self.pos),
                 })
         } else {
             text.parse::<i64>()
                 .map(Value::Int)
                 .map_err(|e| CompileError::Syntax {
-                    message: format!("invalid integer '{}': {}", text, e),
+                    message: format!("invalid integer '{text}': {e}"),
                     span: Span::new(start, self.pos),
                 })
         }
@@ -810,7 +850,7 @@ impl<'a> Parser<'a> {
             "false" => Ok(Value::Bool(false)),
             "null" => Ok(Value::Null),
             other => Err(CompileError::Syntax {
-                message: format!("unknown identifier '{}'", other),
+                message: format!("unknown identifier '{other}'"),
                 span,
             }),
         }
@@ -843,12 +883,11 @@ fn unescape(s: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('"') => out.push('"'),
                 Some('\'') => out.push('\''),
-                Some('\\') => out.push('\\'),
+                Some('\\') | None => out.push('\\'),
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
                 }
-                None => out.push('\\'),
             }
         } else {
             out.push(c);

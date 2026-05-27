@@ -57,10 +57,7 @@ fn optional_then_required_after_existing() {
     let src = r#"{{ input.user?.profile.name }}"#;
     let input = Value::obj([(
         "user",
-        Value::obj([(
-            "profile",
-            Value::obj([("name", Value::Str("Ada".into()))]),
-        )]),
+        Value::obj([("profile", Value::obj([("name", Value::Str("Ada".into()))]))]),
     )]);
     let out: String = render(src, input);
     assert_eq!(out, "Ada");

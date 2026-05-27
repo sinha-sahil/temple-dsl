@@ -71,10 +71,7 @@ fn nested_path() {
 
     let input = Value::obj([(
         "a",
-        Value::obj([(
-            "b",
-            Value::obj([("c", Value::Str("deep".into()))]),
-        )]),
+        Value::obj([("b", Value::obj([("c", Value::Str("deep".into()))]))]),
     )]);
     let result: Out = template.render(input).expect("render");
     assert_eq!(result.x, "deep");
@@ -140,7 +137,7 @@ fn missing_field_error() {
     let input = Value::obj([("other", Value::Str("value".into()))]);
     let result: Result<Out, _> = template.render(input);
     let err = result.expect_err("expected MissingPath");
-    assert!(err.to_string().contains("missing"), "got: {}", err);
+    assert!(err.to_string().contains("missing"), "got: {err}");
 }
 
 #[test]

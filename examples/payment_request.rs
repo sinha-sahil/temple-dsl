@@ -142,10 +142,7 @@ fn build_input() -> Value {
                 ),
                 ("tax", Value::Decimal("10.72".parse().expect("decimal"))),
                 ("total", Value::Decimal("140.71".parse().expect("decimal"))),
-                (
-                    "discount",
-                    Value::Decimal("0.00".parse().expect("decimal")),
-                ),
+                ("discount", Value::Decimal("0.00".parse().expect("decimal"))),
             ]),
         ),
         (
@@ -186,5 +183,5 @@ fn main() {
     let template = Template::compile(TEMPLATE).expect("compile");
     let input = build_input();
     let request: Request = template.render(input).expect("render");
-    println!("{:#?}", request);
+    println!("{request:#?}");
 }

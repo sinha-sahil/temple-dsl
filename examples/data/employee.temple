@@ -1,0 +1,16 @@
+let user = input.user
+{
+    "name":            {{ user.name }},
+    "is_admin":        {{ user.role == "admin" }},
+    "level":           {{ when {
+        this.is_admin:           "full",
+        user.tenure >= 5:        "senior",
+        else:                    "standard"
+    } }},
+    "greeting":        {{ when {
+        this.is_admin:           "Welcome back, admin",
+        this.level == "senior":  "Hi there",
+        else:                    "Hello"
+    } }},
+    "show_dashboard":  {{ this.is_admin || this.level == "senior" }}
+}

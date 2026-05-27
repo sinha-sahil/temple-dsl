@@ -42,5 +42,5 @@ fn main() {
     )]);
 
     let person: Person = template.render(input).expect("render");
-    println!("{:#?}", person);
+    println!("{person:#?}");
 }

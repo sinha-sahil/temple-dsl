@@ -40,5 +40,5 @@ fn main() {
     ]);
 
     let receipt: Receipt = template.render(input).expect("render");
-    println!("{:#?}", receipt);
+    println!("{receipt:#?}");
 }

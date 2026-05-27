@@ -17,7 +17,7 @@ cli = ["dep:serde_json"]
 [dependencies]
 rust_decimal = { version = "1", features = ["serde"] }
 smol_str = "0.2"
-indexmap = "2"
+indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"], optional = true }
 

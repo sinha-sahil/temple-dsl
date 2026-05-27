@@ -15,5 +15,5 @@ fn main() {
     let input = Value::obj([("name", Value::Str("world".into()))]);
 
     let output: Greeting = template.render(input).expect("render");
-    println!("{:?}", output);
+    println!("{output:?}");
 }

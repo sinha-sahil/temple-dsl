@@ -3,58 +3,76 @@ use crate::parse::{BinOp, Expr, ExprKind, OutKind, OutNode, PathSegment, UnOp};
 use crate::value::Value;
 use indexmap::IndexMap;
 use rust_decimal::Decimal;
+use smol_str::SmolStr;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
-pub fn evaluate(node: &OutNode, input: &Value) -> Result<Value, RenderError> {
+pub type Scope = HashMap<SmolStr, Value>;
+
+pub fn evaluate(
+    node: &OutNode,
+    input: &Value,
+    lets: &Scope,
+    this: &Scope,
+) -> Result<Value, RenderError> {
     match &node.kind {
         OutKind::Literal(v) => Ok(v.clone()),
-        OutKind::Hole(expr) => evaluate_expr(expr, input),
+        OutKind::Hole(expr) => evaluate_expr(expr, input, lets, this),
         OutKind::Object(fields) => {
             let mut obj = IndexMap::with_capacity(fields.len());
             for (key, value_node) in fields {
-                obj.insert(key.clone(), evaluate(value_node, input)?);
+                obj.insert(key.clone(), evaluate(value_node, input, lets, this)?);
             }
             Ok(Value::Obj(obj))
         }
         OutKind::Array(items) => {
             let mut arr = Vec::with_capacity(items.len());
             for item in items {
-                arr.push(evaluate(item, input)?);
+                arr.push(evaluate(item, input, lets, this)?);
             }
             Ok(Value::Arr(arr))
         }
     }
 }
 
-fn evaluate_expr(expr: &Expr, input: &Value) -> Result<Value, RenderError> {
+pub fn evaluate_expr(
+    expr: &Expr,
+    input: &Value,
+    lets: &Scope,
+    this: &Scope,
+) -> Result<Value, RenderError> {
     match &expr.kind {
         ExprKind::Literal(v) => Ok(v.clone()),
-        ExprKind::Path { segments } => evaluate_path(segments, input),
-        ExprKind::Binary { op, lhs, rhs } => evaluate_binary(*op, lhs, rhs, expr.span, input),
-        ExprKind::Unary { op, operand } => evaluate_unary(*op, operand, expr.span, input),
+        ExprKind::Path { segments } => evaluate_path(segments, input, lets, this),
+        ExprKind::Binary { op, lhs, rhs } => {
+            evaluate_binary(*op, lhs, rhs, expr.span, input, lets, this)
+        }
+        ExprKind::Unary { op, operand } => {
+            evaluate_unary(*op, operand, expr.span, input, lets, this)
+        }
         ExprKind::Ternary {
             cond,
             then_branch,
             else_branch,
         } => {
-            let c = evaluate_expr(cond, input)?;
+            let c = evaluate_expr(cond, input, lets, this)?;
             let b = require_bool(&c, cond.span)?;
             if b {
-                evaluate_expr(then_branch, input)
+                evaluate_expr(then_branch, input, lets, this)
             } else {
-                evaluate_expr(else_branch, input)
+                evaluate_expr(else_branch, input, lets, this)
             }
         }
         ExprKind::When { branches, fallback } => {
             for branch in branches {
-                let c = evaluate_expr(&branch.cond, input)?;
+                let c = evaluate_expr(&branch.cond, input, lets, this)?;
                 let b = require_bool(&c, branch.cond.span)?;
                 if b {
-                    return evaluate_expr(&branch.result, input);
+                    return evaluate_expr(&branch.result, input, lets, this);
                 }
             }
             match fallback {
-                Some(fb) => evaluate_expr(fb, input),
+                Some(fb) => evaluate_expr(fb, input, lets, this),
                 None => Err(RenderError::WhenNoMatch { span: expr.span }),
             }
         }
@@ -67,45 +85,47 @@ fn evaluate_binary(
     rhs: &Expr,
     span: Span,
     input: &Value,
+    lets: &Scope,
+    this: &Scope,
 ) -> Result<Value, RenderError> {
     match op {
         BinOp::And => {
-            let l = evaluate_expr(lhs, input)?;
+            let l = evaluate_expr(lhs, input, lets, this)?;
             let lb = require_bool(&l, lhs.span)?;
             if !lb {
                 return Ok(Value::Bool(false));
             }
-            let r = evaluate_expr(rhs, input)?;
+            let r = evaluate_expr(rhs, input, lets, this)?;
             let rb = require_bool(&r, rhs.span)?;
             return Ok(Value::Bool(rb));
         }
         BinOp::Or => {
-            let l = evaluate_expr(lhs, input)?;
+            let l = evaluate_expr(lhs, input, lets, this)?;
             let lb = require_bool(&l, lhs.span)?;
             if lb {
                 return Ok(Value::Bool(true));
             }
-            let r = evaluate_expr(rhs, input)?;
+            let r = evaluate_expr(rhs, input, lets, this)?;
             let rb = require_bool(&r, rhs.span)?;
             return Ok(Value::Bool(rb));
         }
         BinOp::Coalesce => {
-            let l = evaluate_expr(lhs, input)?;
+            let l = evaluate_expr(lhs, input, lets, this)?;
             if matches!(l, Value::Null) {
-                return evaluate_expr(rhs, input);
+                return evaluate_expr(rhs, input, lets, this);
             }
             return Ok(l);
         }
         _ => {}
     }
 
-    let l = evaluate_expr(lhs, input)?;
-    let r = evaluate_expr(rhs, input)?;
+    let l = evaluate_expr(lhs, input, lets, this)?;
+    let r = evaluate_expr(rhs, input, lets, this)?;
 
     match op {
-        BinOp::Add => arith(&l, &r, span, |a, b| a.checked_add(b), |a, b| a + b),
-        BinOp::Sub => arith(&l, &r, span, |a, b| a.checked_sub(b), |a, b| a - b),
-        BinOp::Mul => arith(&l, &r, span, |a, b| a.checked_mul(b), |a, b| a * b),
+        BinOp::Add => arith(&l, &r, span, i64::checked_add, |a, b| a + b),
+        BinOp::Sub => arith(&l, &r, span, i64::checked_sub, |a, b| a - b),
+        BinOp::Mul => arith(&l, &r, span, i64::checked_mul, |a, b| a * b),
         BinOp::Div => div(&l, &r, span),
         BinOp::Eq => Ok(Value::Bool(values_equal(&l, &r))),
         BinOp::Ne => Ok(Value::Bool(!values_equal(&l, &r))),
@@ -122,8 +142,10 @@ fn evaluate_unary(
     operand: &Expr,
     span: Span,
     input: &Value,
+    lets: &Scope,
+    this: &Scope,
 ) -> Result<Value, RenderError> {
-    let v = evaluate_expr(operand, input)?;
+    let v = evaluate_expr(operand, input, lets, this)?;
     match op {
         UnOp::Neg => match v {
             Value::Int(n) => n
@@ -144,13 +166,7 @@ fn evaluate_unary(
     }
 }
 
-fn arith<I, D>(
-    l: &Value,
-    r: &Value,
-    span: Span,
-    int_op: I,
-    dec_op: D,
-) -> Result<Value, RenderError>
+fn arith<I, D>(l: &Value, r: &Value, span: Span, int_op: I, dec_op: D) -> Result<Value, RenderError>
 where
     I: Fn(i64, i64) -> Option<i64>,
     D: Fn(Decimal, Decimal) -> Decimal,
@@ -236,24 +252,47 @@ fn compare(l: &Value, r: &Value, span: Span) -> Result<Ordering, RenderError> {
     }
 }
 
-fn evaluate_path(segments: &[PathSegment], input: &Value) -> Result<Value, RenderError> {
-    let root_name = segments
-        .first()
-        .map(|s| s.name.as_str())
-        .unwrap_or("<empty>");
-    let root_span = segments.first().map(|s| s.span).unwrap_or(Span::new(0, 0));
-    if root_name != "input" {
-        return Err(RenderError::TypeMismatch {
-            expected: "path rooted at 'input'",
-            got: root_name.to_string(),
-            span: root_span,
-        });
-    }
+fn evaluate_path(
+    segments: &[PathSegment],
+    input: &Value,
+    lets: &Scope,
+    this: &Scope,
+) -> Result<Value, RenderError> {
+    let root = segments.first().ok_or(RenderError::TypeMismatch {
+        expected: "path",
+        got: "empty".to_string(),
+        span: Span::new(0, 0),
+    })?;
+    let root_name = root.name.as_str();
 
-    let mut current = input;
-    let mut walked: Vec<&str> = vec!["input"];
-    for segment in &segments[1..] {
-        walked.push(segment.name.as_str());
+    let (current, mut walked, start_idx): (&Value, Vec<String>, usize) = match root_name {
+        "input" => (input, vec!["input".to_string()], 1),
+        "this" => {
+            let key_seg = segments.get(1).ok_or(RenderError::TypeMismatch {
+                expected: "'this' followed by '.field'",
+                got: "bare 'this'".to_string(),
+                span: root.span,
+            })?;
+            let v = this.get(&key_seg.name).ok_or(RenderError::MissingPath {
+                path: format!("this.{}", key_seg.name),
+                key: Some(key_seg.name.to_string()),
+                span: key_seg.span,
+            })?;
+            (v, vec!["this".to_string(), key_seg.name.to_string()], 2)
+        }
+        _ => {
+            let v = lets.get(&root.name).ok_or(RenderError::TypeMismatch {
+                expected: "known identifier",
+                got: root_name.to_string(),
+                span: root.span,
+            })?;
+            (v, vec![root_name.to_string()], 1)
+        }
+    };
+
+    let mut current = current;
+    for segment in &segments[start_idx..] {
+        walked.push(segment.name.to_string());
 
         if segment.optional && matches!(current, Value::Null) {
             return Ok(Value::Null);

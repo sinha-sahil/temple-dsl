@@ -32,6 +32,6 @@ fn main() {
             ("target", Value::Str(target.into())),
         ]);
         let event: Event = template.render(input).expect("render");
-        println!("{:?}", event);
+        println!("{event:?}");
     }
 }

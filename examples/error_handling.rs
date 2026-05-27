@@ -14,7 +14,7 @@ fn main() {
         Err(errors) => {
             println!("Compile failed with {} error(s):", errors.len());
             for e in &errors {
-                println!("  • {}", e);
+                println!("  • {e}");
             }
         }
     }
@@ -28,6 +28,6 @@ fn main() {
 
     match template.render::<Out>(input) {
         Ok(_) => unreachable!("expected render to fail"),
-        Err(e) => println!("Render failed: {}", e),
+        Err(e) => println!("Render failed: {e}"),
     }
 }

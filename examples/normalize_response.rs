@@ -113,5 +113,5 @@ fn main() {
     let template = Template::compile(TEMPLATE).expect("compile");
     let response = external_response();
     let user: UserCanonical = template.render(response).expect("render");
-    println!("{:#?}", user);
+    println!("{user:#?}");
 }

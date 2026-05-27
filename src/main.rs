@@ -13,14 +13,14 @@ fn main() -> ExitCode {
     let src = match fs::read_to_string(&args[1]) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("read template: {}", e);
+            eprintln!("read template: {e}");
             return ExitCode::from(1);
         }
     };
     let input_text = match fs::read_to_string(&args[2]) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("read input: {}", e);
+            eprintln!("read input: {e}");
             return ExitCode::from(1);
         }
     };
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         Ok(t) => t,
         Err(errs) => {
             for e in &errs {
-                eprintln!("compile: {}", e);
+                eprintln!("compile: {e}");
             }
             return ExitCode::from(1);
         }
@@ -38,7 +38,7 @@ fn main() -> ExitCode {
     let input_json: serde_json::Value = match serde_json::from_str(&input_text) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("parse input json: {}", e);
+            eprintln!("parse input json: {e}");
             return ExitCode::from(1);
         }
     };
@@ -47,18 +47,18 @@ fn main() -> ExitCode {
     let output: serde_json::Value = match template.render(input) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("render: {}", e);
+            eprintln!("render: {e}");
             return ExitCode::from(1);
         }
     };
 
     match serde_json::to_string_pretty(&output) {
         Ok(s) => {
-            println!("{}", s);
+            println!("{s}");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("write output: {}", e);
+            eprintln!("write output: {e}");
             ExitCode::from(1)
         }
     }

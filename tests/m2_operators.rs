@@ -209,7 +209,7 @@ fn when_only_else_is_allowed() {
 fn when_duplicate_else_errors() {
     let src = r#"{{ when { else: "a", else: "b" } }}"#;
     let err = Template::compile(src).expect_err("expected duplicate else error");
-    assert!(format!("{:?}", err).contains("else"));
+    assert!(format!("{err:?}").contains("else"));
 }
 
 #[test]
@@ -302,7 +302,8 @@ fn precedence_full_stack() {
 
 #[test]
 fn nested_when_in_ternary() {
-    let src = r#"{{ input.x > 0 ? when { input.x > 100: "huge", else: "normal" } : "non-positive" }}"#;
+    let src =
+        r#"{{ input.x > 0 ? when { input.x > 100: "huge", else: "normal" } : "non-positive" }}"#;
     let r: String = render(src, Value::obj([("x", Value::Int(150))]));
     assert_eq!(r, "huge");
     let r: String = render(src, Value::obj([("x", Value::Int(50))]));

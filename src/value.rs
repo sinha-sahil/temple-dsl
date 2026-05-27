@@ -60,12 +60,12 @@ impl From<i64> for Value {
 }
 impl From<i32> for Value {
     fn from(n: i32) -> Value {
-        Value::Int(n as i64)
+        Value::Int(i64::from(n))
     }
 }
 impl From<u32> for Value {
     fn from(n: u32) -> Value {
-        Value::Int(n as i64)
+        Value::Int(i64::from(n))
     }
 }
 impl From<&str> for Value {

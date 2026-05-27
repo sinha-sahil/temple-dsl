@@ -3,11 +3,13 @@
 > A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out.
 
 > [!NOTE]
-> **Active development — milestones 1, 2, 3 / 8 implemented.** MVP plus
-> the expression layer (operators, conditionals, `when` guards, ternary)
-> plus safe access (`?.` / `??`) is wired end-to-end with tests, examples,
-> benchmarks, and a CLI binary. `let`/`this` and collection methods
-> (`.map` / `.filter` / `.fold`) are *designed but not yet built* — see
+> **Active development — milestones 1–4 / 8 implemented.** Everything
+> below is wired end-to-end with tests, examples, benchmarks, and a CLI
+> binary: literals, paths, operators, conditionals, `when`, ternary,
+> safe access (`?.` / `??`), `let` preamble, `this` self-reference, and
+> the compile-time dependency DAG that orders & cycle-checks them.
+> Collection methods (`.map` / `.filter` / `.fold`) and the persistence
+> blob are *designed but not yet built* — see
 > [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the build order and
 > [`DESIGN.md`](DESIGN.md) for the full language spec.
 
@@ -25,24 +27,31 @@ reshape data, fast. A template compiles once and renders against many inputs.
 ## Example (what runs today)
 
 ```
-# Score grader — exercises arithmetic, comparison, `when`, and ternary.
+let user = input.user
 {
-  "score":   {{ input.score }},
-  "doubled": {{ input.score * 2 }},
-  "passed":  {{ input.score >= 60 }},
-  "grade":   {{ when {
-    input.score >= 90: "A",
-    input.score >= 80: "B",
-    input.score >= 70: "C",
-    input.score >= 60: "D",
-    else: "F"
+  "name":           {{ user.name }},
+  "is_admin":       {{ user.role == "admin" }},
+  "level":          {{ when {
+    this.is_admin:           "full",
+    user.tenure >= 5:        "senior",
+    else:                    "standard"
   } }},
-  "summary": {{ input.score >= 90 ? "Excellent" : input.score >= 70 ? "Good" : "Needs work" }}
+  "greeting":       {{ when {
+    this.is_admin:           "Welcome back, admin",
+    this.level == "senior":  "Hi there",
+    else:                    "Hello"
+  } }},
+  "show_dashboard": {{ this.is_admin || this.level == "senior" }}
 }
 ```
 
-The full design extends to `let` preambles and `.map` / `.filter` /
-`.fold` — see [`DESIGN.md`](DESIGN.md) for the language spec and the
+`let user = …` names a sub-expression once; `this.<key>` references
+earlier output fields, and the compiler runs a topological sort plus
+cycle check at compile time, so this template stays correct no matter
+how you reorder the keys.
+
+The full design also extends to `.map` / `.filter` / `.fold` — see
+[`DESIGN.md`](DESIGN.md) for the language spec and the
 implementation-status table below for what is wired up today.
 
 ## Quick start
@@ -93,7 +102,7 @@ The library itself stays lean — `serde_json` only enters the dep tree when the
 | Operators (`+ - * /`, comparison, logical, unary `-`/`!`, parens) | ✅ |
 | Conditionals (`when` guards, ternary `?:`, short-circuit `&&`/`\|\|`) | ✅ |
 | Safe access `?.` and nullish coalesce `??` | ✅ |
-| `let` variables and `this` self-reference | 🟡 designed — milestone 4 |
+| `let` preamble, `this` self-reference, compile-time DAG (cycle detection) | ✅ |
 | `.map` / `.filter` / `.fold` with lambdas | 🟡 designed — milestone 5 |
 | Built-in functions (`round`, `upper`, …) | 🟡 designed — milestone 6 |
 | `to_bytes` / `from_bytes` (compiled blob) | 🟡 designed — milestone 7 |

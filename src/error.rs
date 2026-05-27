@@ -58,7 +58,11 @@ impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CompileError::Syntax { message, span } => {
-                write!(f, "syntax error at {}..{}: {}", span.start, span.end, message)
+                write!(
+                    f,
+                    "syntax error at {}..{}: {}",
+                    span.start, span.end, message
+                )
             }
         }
     }
@@ -68,18 +72,18 @@ impl fmt::Display for RenderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RenderError::MissingPath { path, key, .. } => match key {
-                Some(k) => write!(f, "missing field `{}` while resolving `{}`", k, path),
-                None => write!(f, "missing path `{}`", path),
+                Some(k) => write!(f, "missing field `{k}` while resolving `{path}`"),
+                None => write!(f, "missing path `{path}`"),
             },
             RenderError::TypeMismatch { expected, got, .. } => {
-                write!(f, "type mismatch: expected {}, got {}", expected, got)
+                write!(f, "type mismatch: expected {expected}, got {got}")
             }
             RenderError::DivideByZero { .. } => write!(f, "divide by zero"),
             RenderError::ArithmeticOverflow { .. } => write!(f, "arithmetic overflow"),
             RenderError::WhenNoMatch { .. } => {
                 write!(f, "no `when` branch matched and no `else` provided")
             }
-            RenderError::Deserialize(msg) => write!(f, "deserialize error: {}", msg),
+            RenderError::Deserialize(msg) => write!(f, "deserialize error: {msg}"),
         }
     }
 }
@@ -87,12 +91,11 @@ impl fmt::Display for RenderError {
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::Corrupt(s) => write!(f, "corrupt blob: {}", s),
+            LoadError::Corrupt(s) => write!(f, "corrupt blob: {s}"),
             LoadError::IncompatibleVersion { found, expected } => {
                 write!(
                     f,
-                    "incompatible blob version: found {}, expected {}",
-                    found, expected
+                    "incompatible blob version: found {found}, expected {expected}"
                 )
             }
         }
