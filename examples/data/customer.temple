@@ -1,0 +1,12 @@
+# A normalized customer record.
+{
+    "id":      {{ input.id }},
+    "name":    {{ input.name }},
+    "email":   {{ input.contact.email }},
+    "address": {
+        "country": {{ input.profile.country }},
+        "city":    {{ input.profile.city }}
+    },
+    "tags":    [{{ input.tag_a }}, {{ input.tag_b }}, "active"],
+    "vip":     true
+}

@@ -3,105 +3,144 @@
 > A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out.
 
 > [!NOTE]
-> **Design stage** — Temple is not yet implemented. This document reflects the
-> settled design. Depth: [`DESIGN.md`](DESIGN.md) · Examples: [`samples/`](samples/)
+> **Active development — milestone 1 / 8 implemented.** The MVP slice
+> (object/array literals, bare holes, paths, value literals, typed-output
+> deserialization) is wired end-to-end with tests, examples, benchmarks,
+> and a CLI binary. The broader language (operators, conditionals,
+> `let`/`this`, collection methods) is *designed but not yet built* —
+> see [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the build order and
+> [`DESIGN.md`](DESIGN.md) for the full language spec.
 
 ## Overview
 
 Temple takes an **input value** and a **template**, and returns a value
-deserialized straight into your Rust types. A template describes the *shape* of
-the output, with `{{ … }}` holes where values are computed.
+deserialized straight into your Rust types. A template describes the *shape*
+of the output, with `{{ … }}` holes where values are computed.
 
-It is a small, hand-rolled, dynamically-typed interpreter — built for one job,
-reshaping data, and built to be fast: a template compiles once and renders many
-times, on a path that never parses.
+It is a small, hand-rolled, dynamically-typed interpreter — built for one job:
+reshape data, fast. A template compiles once and renders against many inputs.
 
 **Built for** — templating, rule engines, and reshaping data on the fly.
 
-## Example
+## Example (what runs today)
 
 ```
-# price a cart, with a loyalty discount
-let tier = when {
-  input.customer.spend >= 1000: 'gold'
-  input.customer.spend >= 250:  'silver'
-  else:                         'standard'
-}
-
+# A normalized customer record.
 {
-  "customer": {{ input.customer.name }},
-  "tier":     {{ tier }},
-  "discount": {{ input.cart.subtotal * (tier == 'gold' ? 0.15 : 0.0) }},
-  "total":    {{ input.cart.subtotal - this.discount }},
-  "note":     "Thanks, {{ input.customer.name }}!"
+  "id":      {{ input.id }},
+  "name":    {{ input.name }},
+  "email":   {{ input.contact.email }},
+  "address": {
+    "country": {{ input.profile.country }},
+    "city":    {{ input.profile.city }}
+  },
+  "tags":    [{{ input.tag_a }}, {{ input.tag_b }}, "active"],
+  "vip":     true
 }
 ```
 
-`let` declares a variable · `input.` is the data you pass in · `this.` reads a
-sibling key · `when` picks the first matching branch · `{{ … }}` holes compute
-values · arithmetic is decimal-exact. More patterns in [`samples/`](samples/).
-
-## Features
-
-| Capability | What it gives you |
-| --- | --- |
-| **Decimal-correct math** | `rust_decimal` throughout — no `f64`, no rounding drift |
-| **Typed output** | Results deserialize straight into your Rust structs, via serde |
-| **Compile once, render many** | Templates pre-compile to a serializable blob; the render path never parses |
-| **Variables & self-reference** | `let` bindings and `this.<key>`, wired by a compile-time dependency graph |
-| **Conditionals** | `when` guard table and ternary `?:`, with full operator precedence |
-| **Bounded iteration** | `map` / `filter` / `fold` over input collections — terminating, never a runaway loop |
-| **Safe field access** | `?.` optional access and `??` null-coalescing for fields that may be absent |
-| **Custom functions** | Register your own alongside a small built-in set |
-| **Errors are values** | Every fallible call returns `Result` — Temple never panics |
+The full design extends to `let` preambles, `when` guards, ternaries, `?.` /
+`??`, and `.map` / `.filter` / `.fold` — see [`DESIGN.md`](DESIGN.md) for the
+language spec and the implementation-status table below for what is wired up
+today.
 
 ## Quick start
 
 ```rust
-use temple_dsl::Template;
+use temple_dsl::{Template, Value};
+use serde::Deserialize;
 
-// Write time — compile once; store the source and the compiled blob.
-let compiled = Template::compile(source)?;
-db.store(id, source, compiled.to_bytes());
+#[derive(Deserialize, Debug)]
+struct Out { id: i64, name: String }
 
-// Render time — load the blob (no parsing), then render.
-let template = Template::from_bytes(&blob)?;
+let src = r#"{ "id": {{ input.id }}, "name": {{ input.name }} }"#;
+let template = Template::compile(src).unwrap();
+let input = Value::obj([
+    ("id",   Value::Int(7)),
+    ("name", Value::Str("Ada".into())),
+]);
 
-match template.render::<Receipt>(input) {
-    Ok(receipt) => { /* a typed Receipt */ }
-    Err(err)    => { /* missing field, type mismatch, … — you decide */ }
+match template.render::<Out>(input) {
+    Ok(out) => println!("{:?}", out),
+    Err(e)  => eprintln!("{}", e),
 }
 ```
 
-`Receipt` is any `#[derive(Deserialize)]` struct. Every fallible call returns a
-`Result` — Temple never panics, and never decides error handling for you.
+## CLI
+
+A feature-gated `temple` binary runs a `.temple` file against a JSON input file:
+
+```bash
+cargo install --path . --features cli
+temple some_template.temple some_input.json
+```
+
+The library itself stays lean — `serde_json` only enters the dep tree when the
+`cli` feature is enabled. Downstream library consumers get just the API.
+
+## Implementation status
+
+| Capability | Status |
+| --- | --- |
+| Object / array / scalar output, value literals | ✅ |
+| Bare-hole expressions, path access (`input.a.b.c`) | ✅ |
+| Comments (`#`), trailing commas | ✅ |
+| Decimal-correct arithmetic via `rust_decimal` | ✅ |
+| Typed output — serde `Deserializer` over `&Value` | ✅ |
+| Compile once, render many (in-memory `Template`) | ✅ |
+| `Result` everywhere, no panics | ✅ |
+| Operators (`+ - * /`, comparison, logical) | 🟡 designed — milestone 2 |
+| Conditionals (`when`, ternary `?:`) | 🟡 designed — milestone 2 |
+| `?.` / `??` | 🟡 designed — milestone 3 |
+| `let` variables and `this` self-reference | 🟡 designed — milestone 4 |
+| `.map` / `.filter` / `.fold` with lambdas | 🟡 designed — milestone 5 |
+| Built-in functions (`round`, `upper`, …) | 🟡 designed — milestone 6 |
+| `to_bytes` / `from_bytes` (compiled blob) | 🟡 designed — milestone 7 |
+| `validate` / `format` / multi-error / diagnostics | 🟡 designed — milestone 8 |
+
+## Performance (MVP, tree-walking evaluator)
+
+Measured with Criterion on the current implementation:
+
+| Bench | Time |
+| --- | --- |
+| `compile_small` (3-field template) | ~326 ns |
+| `compile_big` (~80 lines, ~30 fields, 4 levels) | ~4.37 µs |
+| `render_small` | ~337 ns |
+| `render_big` (30 fields, decimals, struct round-trip) | ~4.18 µs |
+| `compile_and_render_small` (cold path) | ~679 ns |
+
+Design targets — sub-1 ms render typical, sub-100 µs simple — hold with
+~200× headroom on the big template. Reproduce with `cargo bench`.
 
 ## How it works
 
 A template is compiled **once**, when it is saved — parsing, validation, and
-dependency analysis all happen there. The render path only loads a pre-compiled
-blob and evaluates it; it never parses. This is what keeps render latency
-bounded (targets: sub-1 ms typical, sub-100 µs simple).
+(future) dependency analysis happen there. The render path loads the compiled
+artifact and evaluates it without re-parsing.
 
 ```mermaid
 sequenceDiagram
     participant App as Application
     participant Temple
-    participant DB as Database
+    participant Store as Storage
 
-    Note over App,DB: Write time — once, when a template is saved
+    Note over App,Store: Write time — once, when a template is saved
     App->>Temple: compile(source)
     Temple-->>App: Template
-    App->>DB: store source + compiled blob
+    App->>Store: persist source + compiled blob
 
-    Note over App,DB: Render time — on every request
-    App->>DB: fetch compiled blob
-    DB-->>App: blob
+    Note over App,Store: Render time — on every request
+    App->>Store: load compiled blob
+    Store-->>App: blob
     App->>Temple: from_bytes(blob)
     Temple-->>App: Template (no parsing)
     App->>Temple: render(input)
     Temple-->>App: Ok(value) or Err(RenderError)
 ```
+
+(Today `to_bytes` / `from_bytes` are stubs — milestone 7 — so the persistence
+arrows above describe the design target, not the current build.)
 
 ## How Temple compares
 
@@ -117,14 +156,19 @@ Temple needs four things at once. Existing crates each miss at least one:
 
 *✓ yes · ~ partial · ✗ no. Our evaluation for Temple's specific needs — not a general verdict on these crates.*
 
-## Project status
+## Project layout
 
-Design stage — the design is settled, implementation has not started.
+- **[`DESIGN.md`](DESIGN.md)** — full language spec, decisions, open questions.
+- **[`IMPLEMENTATION.md`](IMPLEMENTATION.md)** — build order, file layout, sequence diagram, design choices.
+- **[`FAQ.md`](FAQ.md)** — how the engine actually works inside.
+- **[`samples/`](samples/)** — canonical template examples (some use later-milestone features).
+- **[`examples/`](examples/)** — runnable Rust demos against the current MVP.
+- **[`benches/`](benches/)** — Criterion benchmark suite.
+- **`src/`** — library + the feature-gated CLI binary.
 
-- **[`DESIGN.md`](DESIGN.md)** — format, evaluation model, architecture, decisions, open questions, roadmap.
-- **[`samples/`](samples/)** — a worked template for each supported shape.
+## Author
 
-Not yet published to crates.io. Feedback on the design is welcome — open an issue.
+[Sahil Sinha](https://github.com/sinha-sahil) · `sahilsinha.dar@gmail.com`
 
 ## License
 

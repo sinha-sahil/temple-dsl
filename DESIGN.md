@@ -11,7 +11,7 @@
 3. [Expression language](#3-expression-language)
 4. [The value model](#4-the-value-model)
 5. [Variables & self-reference](#5-variables--self-reference)
-6. [Runtime & storage](#6-runtime--storage)
+6. [Runtime model](#6-runtime-model)
 7. [API & errors](#7-api--errors)
 8. [Guarantees](#8-guarantees)
 9. [Design decisions](#9-design-decisions)
@@ -43,19 +43,19 @@ parses.
 sequenceDiagram
     participant App as Application
     participant Temple
-    participant DB as Database
+    participant Store as Storage
 
-    Note over App,DB: Write time — once per template, when a user saves it
+    Note over App,Store: Write time — once per template, when a user saves it
     App->>Temple: compile(source)
     Temple->>Temple: parse · validate · build graph · enforce caps
     Temple-->>App: Template
     App->>Temple: to_bytes()
     Temple-->>App: compiled blob
-    App->>DB: store source text + compiled blob
+    App->>Store: persist source + compiled blob
 
-    Note over App,DB: Render time — many times, on every request
-    App->>DB: fetch compiled blob
-    DB-->>App: blob
+    Note over App,Store: Render time — many times, on every request
+    App->>Store: load compiled blob
+    Store-->>App: blob
     App->>Temple: from_bytes(blob)
     Temple-->>App: Template — deserialize only, no parsing
     App->>Temple: render(input)
@@ -135,9 +135,9 @@ Three options were weighed:
 | Valid JSON (quoted holes, `$let` key) | Rejected. Needs a subtler "string is exactly one hole" rule; JSON strings can't span lines, cramping a `when` block onto one line. |
 | Transpiler (author bare → store JSON) | Rejected. Two grammars, source maps, and two drifting artifacts — complexity, not simplicity. |
 
-Accepted cost: a raw `.temple` file is not valid JSON, so JSON formatters do not
-apply. The engine hand-writes its parser regardless, and templates are stored in
-plain `TEXT` columns — which never required valid JSON.
+Accepted cost: a raw `.temple` file is not valid JSON, so JSON formatters do
+not apply. The engine hand-writes its parser regardless. Where the source lives
+is the caller's call — Temple just sees a string.
 
 ### Samples
 
@@ -253,15 +253,14 @@ themselves, so there is no recursion.
 Iteration is **bounded**: the input array is finite and each method walks it
 once. A render always terminates and stays non-Turing-complete — Temple has
 collection methods, not loops. What this costs a render is covered in
-[§6](#6-runtime--storage).
+[§6](#6-runtime-model).
 
 ### Functions
 
 Functions are called as `name(arg, …)` — a small built-in set of scalar helpers
-(`round`, `upper`, `lower`, … — final set TBD) plus custom functions
-([§7](#7-api--errors)), pure and dispatched through an enum rather than a
-string-keyed map. (Operations *on a collection* are methods, above; scalar
-helpers are functions.)
+(`round`, `upper`, `lower`, … — final set TBD), pure and dispatched through an
+enum rather than a string-keyed map. (Operations *on a collection* are methods,
+above; scalar helpers are functions.)
 
 ### Literals & constructors
 
@@ -362,7 +361,7 @@ It sorts this graph and rejects any edge that would close a cycle.
 
 ---
 
-## 6. Runtime & storage
+## 6. Runtime model
 
 ### Compile at write time
 
@@ -370,19 +369,22 @@ Templates are created and updated through the application — an app-mediated sa
 path. The save handler compiles, then stores the result:
 
 ```rust
-let compiled = Template::compile(&source)?;   // parse · validate · DAG · caps
-db.store(id, source, compiled.to_bytes());    // store text + compiled blob
+let compiled = Template::compile(&source)?;     // parse · validate · DAG · caps
+storage.save(id, source, compiled.to_bytes());  // a &str and a Vec<u8>; where they live is your call
 ```
 
 Saving is human-paced, so compilation cost is invisible — and syntax, cycle, and
 cap errors reach the author immediately.
 
-### What is stored
+### Artifacts
 
-| Artifact | Role |
+`compile` produces two things to keep — both opaque to Temple, both the
+caller's to persist wherever they like:
+
+| Artifact | Purpose |
 | --- | --- |
-| **Source text** | Source of truth — human-readable, diffable, version-proof. A plain `TEXT` column. |
-| **Compiled blob** — `to_bytes()` | Render-path artifact — derived, version-tagged, regenerable from the text. A cache, never the source of truth. |
+| Source text (`&str`) | Source of truth — human-readable, diffable, version-proof; recompile from it if the blob format ever changes. |
+| Compiled blob (`Vec<u8>` from `to_bytes()`) | Render-path artifact — derived, version-tagged, regenerable from the source. A cache, never the source of truth. |
 
 ### The render path never parses
 
@@ -392,8 +394,8 @@ let out: Result<T, RenderError> = template.render(input);    // the caller handl
 ```
 
 An in-memory `Arc<Template>` cache keyed by `(template_id, version)` sits on top:
-a hit is a pure render; a miss costs a DB fetch plus `from_bytes` — a bounded
-deserialize, never a parse. The compiled `Template` is immutable and
+a hit is a pure render; a miss costs a load from wherever you persist the blob,
+plus `from_bytes` — a bounded deserialize, never a parse. The compiled `Template` is immutable and
 `Send + Sync`, shared across all workers.
 
 ### Size caps
@@ -431,11 +433,6 @@ Template::validate(src: &str) -> Result<(), Vec<CompileError>>      // same chec
 Template::format(src: &str)   -> Result<String, Vec<CompileError>>  // parse + emit canonical layout
 Template::to_bytes(&self)     -> Vec<u8>
 
-// Author-time, with custom functions
-Template::builder()
-    .function(name: &str, f: impl Fn(&[Value]) -> Result<Value, _>)
-    .compile(src: &str) -> Result<Template, Vec<CompileError>>
-
 // Render time (hot path)
 Template::from_bytes(bytes: &[u8]) -> Result<Template, LoadError>
 Template::render<T: DeserializeOwned>(&self, input: impl Into<Value>)
@@ -445,8 +442,7 @@ Template::render<T: DeserializeOwned>(&self, input: impl Into<Value>)
 `validate` and `format` are author-time helpers — call them from a save handler
 or an editor integration to give the author immediate feedback. Both reuse
 `compile`'s parser and checks; `validate` discards the result, `format` re-emits
-the source in a canonical layout. Custom functions are registered at compile
-time and travel inside the compiled `Template`.
+the source in a canonical layout.
 
 ### Errors
 
@@ -573,7 +569,7 @@ Target size: ~2,000 lines of Rust.
 - [ ] Conditionals — `when` guards and ternary
 - [ ] Collection methods — `map` / `filter` / `fold`, with lambdas
 - [ ] `let` variables and `this` — the dependency graph
-- [ ] Built-in functions + custom function registry
+- [ ] Built-in functions
 - [ ] `compile` / `validate` / `format` — size caps, multi-error reporting, located messages
 - [ ] `to_bytes` / `from_bytes` — the compiled blob
 - [ ] `render` and serde deserialization of results

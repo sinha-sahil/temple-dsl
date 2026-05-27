@@ -1,0 +1,13 @@
+{
+    "id": 42,
+    "name": "Ada Lovelace",
+    "contact": {
+        "email": "ada@example.com"
+    },
+    "profile": {
+        "country": "UK",
+        "city": "London"
+    },
+    "tag_a": "premium",
+    "tag_b": "researcher"
+}

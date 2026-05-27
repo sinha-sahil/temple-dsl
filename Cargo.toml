@@ -1,0 +1,34 @@
+[package]
+name = "temple-dsl"
+version = "0.1.0"
+edition = "2021"
+description = "A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out."
+license = "MIT OR Apache-2.0"
+authors = ["Sahil Sinha <sahilsinha.dar@gmail.com>"]
+repository = "https://github.com/sinha-sahil/temple-dsl"
+homepage = "https://github.com/sinha-sahil/temple-dsl"
+readme = "README.md"
+keywords = ["template", "dsl", "json", "render", "data"]
+categories = ["template-engine", "parser-implementations"]
+
+[features]
+cli = ["dep:serde_json"]
+
+[dependencies]
+rust_decimal = { version = "1", features = ["serde"] }
+smol_str = "0.2"
+indexmap = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"], optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bin]]
+name = "temple"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[bench]]
+name = "render_bench"
+harness = false

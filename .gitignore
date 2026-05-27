@@ -1,0 +1,26 @@
+# Cargo build artifacts
+/target
+
+# Library crate — don't track resolved dependency versions; downstream
+# consumers resolve their own. Delete this line if you commit Cargo.lock
+# (e.g. for reproducible CI).
+Cargo.lock
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# rustfmt backups
+*.rs.bk
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Misc backups
+*.bak
+*.orig
