@@ -36,6 +36,15 @@ pub enum RenderError {
         got: String,
         span: Span,
     },
+    DivideByZero {
+        span: Span,
+    },
+    ArithmeticOverflow {
+        span: Span,
+    },
+    WhenNoMatch {
+        span: Span,
+    },
     Deserialize(String),
 }
 
@@ -64,6 +73,11 @@ impl fmt::Display for RenderError {
             },
             RenderError::TypeMismatch { expected, got, .. } => {
                 write!(f, "type mismatch: expected {}, got {}", expected, got)
+            }
+            RenderError::DivideByZero { .. } => write!(f, "divide by zero"),
+            RenderError::ArithmeticOverflow { .. } => write!(f, "arithmetic overflow"),
+            RenderError::WhenNoMatch { .. } => {
+                write!(f, "no `when` branch matched and no `else` provided")
             }
             RenderError::Deserialize(msg) => write!(f, "deserialize error: {}", msg),
         }

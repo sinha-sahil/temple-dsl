@@ -1,0 +1,14 @@
+# Score grader — exercises arithmetic, comparison, `when`, and ternary.
+{
+  "score":   {{ input.score }},
+  "doubled": {{ input.score * 2 }},
+  "passed":  {{ input.score >= 60 }},
+  "grade":   {{ when {
+    input.score >= 90: "A",
+    input.score >= 80: "B",
+    input.score >= 70: "C",
+    input.score >= 60: "D",
+    else: "F"
+  } }},
+  "summary": {{ input.score >= 90 ? "Excellent" : input.score >= 70 ? "Good" : "Needs work" }}
+}

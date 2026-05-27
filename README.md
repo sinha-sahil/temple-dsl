@@ -3,13 +3,12 @@
 > A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out.
 
 > [!NOTE]
-> **Active development — milestone 1 / 8 implemented.** The MVP slice
-> (object/array literals, bare holes, paths, value literals, typed-output
-> deserialization) is wired end-to-end with tests, examples, benchmarks,
-> and a CLI binary. The broader language (operators, conditionals,
-> `let`/`this`, collection methods) is *designed but not yet built* —
-> see [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the build order and
-> [`DESIGN.md`](DESIGN.md) for the full language spec.
+> **Active development — milestones 1 & 2 / 8 implemented.** MVP plus
+> the expression layer (operators, conditionals, `when` guards, ternary)
+> is wired end-to-end with tests, examples, benchmarks, and a CLI binary.
+> `let`/`this`, safe access (`?.`/`??`), and collection methods are
+> *designed but not yet built* — see [`IMPLEMENTATION.md`](IMPLEMENTATION.md)
+> for the build order and [`DESIGN.md`](DESIGN.md) for the full language spec.
 
 ## Overview
 
@@ -25,24 +24,25 @@ reshape data, fast. A template compiles once and renders against many inputs.
 ## Example (what runs today)
 
 ```
-# A normalized customer record.
+# Score grader — exercises arithmetic, comparison, `when`, and ternary.
 {
-  "id":      {{ input.id }},
-  "name":    {{ input.name }},
-  "email":   {{ input.contact.email }},
-  "address": {
-    "country": {{ input.profile.country }},
-    "city":    {{ input.profile.city }}
-  },
-  "tags":    [{{ input.tag_a }}, {{ input.tag_b }}, "active"],
-  "vip":     true
+  "score":   {{ input.score }},
+  "doubled": {{ input.score * 2 }},
+  "passed":  {{ input.score >= 60 }},
+  "grade":   {{ when {
+    input.score >= 90: "A",
+    input.score >= 80: "B",
+    input.score >= 70: "C",
+    input.score >= 60: "D",
+    else: "F"
+  } }},
+  "summary": {{ input.score >= 90 ? "Excellent" : input.score >= 70 ? "Good" : "Needs work" }}
 }
 ```
 
-The full design extends to `let` preambles, `when` guards, ternaries, `?.` /
-`??`, and `.map` / `.filter` / `.fold` — see [`DESIGN.md`](DESIGN.md) for the
-language spec and the implementation-status table below for what is wired up
-today.
+The full design extends to `let` preambles, `?.` / `??`, and `.map` /
+`.filter` / `.fold` — see [`DESIGN.md`](DESIGN.md) for the language spec
+and the implementation-status table below for what is wired up today.
 
 ## Quick start
 
@@ -89,8 +89,8 @@ The library itself stays lean — `serde_json` only enters the dep tree when the
 | Typed output — serde `Deserializer` over `&Value` | ✅ |
 | Compile once, render many (in-memory `Template`) | ✅ |
 | `Result` everywhere, no panics | ✅ |
-| Operators (`+ - * /`, comparison, logical) | 🟡 designed — milestone 2 |
-| Conditionals (`when`, ternary `?:`) | 🟡 designed — milestone 2 |
+| Operators (`+ - * /`, comparison, logical, unary `-`/`!`, parens) | ✅ |
+| Conditionals (`when` guards, ternary `?:`, short-circuit `&&`/`\|\|`) | ✅ |
 | `?.` / `??` | 🟡 designed — milestone 3 |
 | `let` variables and `this` self-reference | 🟡 designed — milestone 4 |
 | `.map` / `.filter` / `.fold` with lambdas | 🟡 designed — milestone 5 |
