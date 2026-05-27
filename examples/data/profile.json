@@ -1,0 +1,14 @@
+{
+  "id": "u_8a92",
+  "profile": {
+    "display_name": "Ada Lovelace"
+  },
+  "contact": {
+    "email": "ada@example.com",
+    "phone": null
+  },
+  "address": null,
+  "subscription": {
+    "tier": "gold"
+  }
+}

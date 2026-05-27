@@ -63,6 +63,7 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    Coalesce,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,7 @@ pub struct WhenBranch {
 pub struct PathSegment {
     pub name: SmolStr,
     pub span: Span,
+    pub optional: bool,
 }
 
 pub fn parse(src: &str) -> Result<OutNode, Vec<CompileError>> {
@@ -311,9 +313,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_ternary(&mut self) -> Result<Expr, CompileError> {
-        let cond = self.parse_or()?;
+        let cond = self.parse_coalesce()?;
         self.skip_ws();
-        if self.peek() == Some(b'?') && !self.matches("?.") {
+        if self.peek() == Some(b'?') && !self.matches("?.") && !self.matches("??") {
             let cond_start = cond.span.start;
             self.pos += 1;
             self.skip_ws();
@@ -336,6 +338,19 @@ impl<'a> Parser<'a> {
             })
         } else {
             Ok(cond)
+        }
+    }
+
+    fn parse_coalesce(&mut self) -> Result<Expr, CompileError> {
+        let lhs = self.parse_or()?;
+        self.skip_ws();
+        if self.matches("??") {
+            self.pos += 2;
+            self.skip_ws();
+            let rhs = self.parse_coalesce()?;
+            Ok(make_binary(BinOp::Coalesce, lhs, rhs))
+        } else {
+            Ok(lhs)
         }
     }
 
@@ -479,8 +494,6 @@ impl<'a> Parser<'a> {
             });
         }
         if self.peek() == Some(b'-') {
-            // If `-` directly leads a number literal (`-3`, `-.5`), let parse_number consume it.
-            // Otherwise this is a unary negation on an expression.
             let next = self.peek_at(1);
             let is_number_literal = matches!(next, Some(b'0'..=b'9'))
                 || (next == Some(b'.')
@@ -563,32 +576,32 @@ impl<'a> Parser<'a> {
                         let mut segments = vec![PathSegment {
                             name: ident,
                             span: ident_span,
+                            optional: false,
                         }];
                         loop {
                             self.skip_ws();
-                            if self.peek() != Some(b'.') || self.matches(".(") {
-                                break;
-                            }
-                            // Look ahead: must be a `.` followed by an ident char.
-                            // (Avoids stealing decimal dots if they ever appear here.)
-                            if !self
-                                .peek_at(1)
-                                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                            let (advance, optional) = if self.matches("?.")
+                                && self
+                                    .peek_at(2)
+                                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
                             {
+                                (2, true)
+                            } else if self.peek() == Some(b'.')
+                                && self
+                                    .peek_at(1)
+                                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                            {
+                                (1, false)
+                            } else {
                                 break;
-                            }
-                            self.pos += 1;
+                            };
+                            self.pos += advance;
                             let seg_start = self.pos;
                             let name = self.read_ident();
-                            if name.is_empty() {
-                                return Err(CompileError::Syntax {
-                                    message: "expected identifier after '.'".into(),
-                                    span: Span::new(self.pos, self.pos + 1),
-                                });
-                            }
                             segments.push(PathSegment {
                                 name,
                                 span: Span::new(seg_start, self.pos),
+                                optional,
                             });
                         }
                         Ok(Expr {

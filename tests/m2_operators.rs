@@ -132,7 +132,6 @@ fn logical_or() {
 
 #[test]
 fn logical_and_short_circuits() {
-    // The RHS would divide by zero if evaluated.
     assert!(!render_bool("{{ false && (1 / 0 == 0) }}"));
 }
 
@@ -160,7 +159,6 @@ fn ternary_with_path() {
 
 #[test]
 fn ternary_right_associative() {
-    // a ? b : c ? d : e   ==   a ? b : (c ? d : e)
     let r: i64 = render("{{ false ? 1 : true ? 2 : 3 }}", Value::Null);
     assert_eq!(r, 2);
     let r: i64 = render("{{ false ? 1 : false ? 2 : 3 }}", Value::Null);
@@ -298,10 +296,6 @@ fn when_with_decimals() {
 
 #[test]
 fn precedence_full_stack() {
-    // Multiplicative > additive > comparison > equality > && > || > ternary.
-    // Expression:  true ? 1 + 2 * 3 == 7 && 4 > 3 : 0
-    // Inside  ternary then-branch:
-    //   2 * 3 = 6 → 1 + 6 = 7 → 7 == 7 → true → 4 > 3 → true → true && true = true
     let r: bool = render("{{ true ? 1 + 2 * 3 == 7 && 4 > 3 : false }}", Value::Null);
     assert!(r);
 }

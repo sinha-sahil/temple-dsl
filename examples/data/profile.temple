@@ -1,0 +1,8 @@
+{
+  "id":      {{ input.id }},
+  "name":    {{ input.profile?.display_name ?? "Anonymous" }},
+  "email":   {{ input.contact?.email ?? "no-email" }},
+  "phone":   {{ input.contact?.phone ?? "no-phone" }},
+  "country": {{ input.address?.country ?? "Unknown" }},
+  "tier":    {{ input.subscription?.tier ?? "free" }}
+}

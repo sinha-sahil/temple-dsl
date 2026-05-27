@@ -89,6 +89,13 @@ fn evaluate_binary(
             let rb = require_bool(&r, rhs.span)?;
             return Ok(Value::Bool(rb));
         }
+        BinOp::Coalesce => {
+            let l = evaluate_expr(lhs, input)?;
+            if matches!(l, Value::Null) {
+                return evaluate_expr(rhs, input);
+            }
+            return Ok(l);
+        }
         _ => {}
     }
 
@@ -106,7 +113,7 @@ fn evaluate_binary(
         BinOp::Le => compare(&l, &r, span).map(|c| Value::Bool(c != Ordering::Greater)),
         BinOp::Gt => compare(&l, &r, span).map(|c| Value::Bool(c == Ordering::Greater)),
         BinOp::Ge => compare(&l, &r, span).map(|c| Value::Bool(c != Ordering::Less)),
-        BinOp::And | BinOp::Or => unreachable!(),
+        BinOp::And | BinOp::Or | BinOp::Coalesce => unreachable!(),
     }
 }
 
@@ -247,9 +254,15 @@ fn evaluate_path(segments: &[PathSegment], input: &Value) -> Result<Value, Rende
     let mut walked: Vec<&str> = vec!["input"];
     for segment in &segments[1..] {
         walked.push(segment.name.as_str());
+
+        if segment.optional && matches!(current, Value::Null) {
+            return Ok(Value::Null);
+        }
+
         match current {
             Value::Obj(obj) => match obj.get(&segment.name) {
                 Some(value) => current = value,
+                None if segment.optional => return Ok(Value::Null),
                 None => {
                     return Err(RenderError::MissingPath {
                         path: walked.join("."),

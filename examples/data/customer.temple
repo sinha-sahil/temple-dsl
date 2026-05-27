@@ -1,4 +1,3 @@
-# A normalized customer record.
 {
     "id":      {{ input.id }},
     "name":    {{ input.name }},

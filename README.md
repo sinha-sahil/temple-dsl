@@ -3,12 +3,13 @@
 > A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out.
 
 > [!NOTE]
-> **Active development — milestones 1 & 2 / 8 implemented.** MVP plus
+> **Active development — milestones 1, 2, 3 / 8 implemented.** MVP plus
 > the expression layer (operators, conditionals, `when` guards, ternary)
-> is wired end-to-end with tests, examples, benchmarks, and a CLI binary.
-> `let`/`this`, safe access (`?.`/`??`), and collection methods are
-> *designed but not yet built* — see [`IMPLEMENTATION.md`](IMPLEMENTATION.md)
-> for the build order and [`DESIGN.md`](DESIGN.md) for the full language spec.
+> plus safe access (`?.` / `??`) is wired end-to-end with tests, examples,
+> benchmarks, and a CLI binary. `let`/`this` and collection methods
+> (`.map` / `.filter` / `.fold`) are *designed but not yet built* — see
+> [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the build order and
+> [`DESIGN.md`](DESIGN.md) for the full language spec.
 
 ## Overview
 
@@ -40,9 +41,9 @@ reshape data, fast. A template compiles once and renders against many inputs.
 }
 ```
 
-The full design extends to `let` preambles, `?.` / `??`, and `.map` /
-`.filter` / `.fold` — see [`DESIGN.md`](DESIGN.md) for the language spec
-and the implementation-status table below for what is wired up today.
+The full design extends to `let` preambles and `.map` / `.filter` /
+`.fold` — see [`DESIGN.md`](DESIGN.md) for the language spec and the
+implementation-status table below for what is wired up today.
 
 ## Quick start
 
@@ -91,7 +92,7 @@ The library itself stays lean — `serde_json` only enters the dep tree when the
 | `Result` everywhere, no panics | ✅ |
 | Operators (`+ - * /`, comparison, logical, unary `-`/`!`, parens) | ✅ |
 | Conditionals (`when` guards, ternary `?:`, short-circuit `&&`/`\|\|`) | ✅ |
-| `?.` / `??` | 🟡 designed — milestone 3 |
+| Safe access `?.` and nullish coalesce `??` | ✅ |
 | `let` variables and `this` self-reference | 🟡 designed — milestone 4 |
 | `.map` / `.filter` / `.fold` with lambdas | 🟡 designed — milestone 5 |
 | Built-in functions (`round`, `upper`, …) | 🟡 designed — milestone 6 |

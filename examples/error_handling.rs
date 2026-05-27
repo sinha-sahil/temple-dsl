@@ -8,8 +8,7 @@ struct Out {
 }
 
 fn main() {
-    // ── Case 1: a syntax error at compile ───────────────────────────────
-    let bad_template = r#"{ "x": {{ input.broken }"#; // missing closing }}
+    let bad_template = r#"{ "x": {{ input.broken }"#;
     match Template::compile(bad_template) {
         Ok(_) => unreachable!("expected compile to fail"),
         Err(errors) => {
@@ -22,7 +21,6 @@ fn main() {
 
     println!();
 
-    // ── Case 2: a missing field at render ───────────────────────────────
     let good_template = r#"{ "x": {{ input.missing_field }} }"#;
     let template = Template::compile(good_template).expect("compile");
 

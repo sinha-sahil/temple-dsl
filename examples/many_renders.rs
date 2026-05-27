@@ -17,10 +17,8 @@ fn main() {
         "target": {{ input.target }}
     }"#;
 
-    // Compile once.
     let template = Template::compile(src).expect("compile");
 
-    // Render against many inputs.
     let events = [
         ("ada", "viewed", "dashboard"),
         ("babbage", "edited", "report-42"),

@@ -1,4 +1,3 @@
-# Score grader — exercises arithmetic, comparison, `when`, and ternary.
 {
   "score":   {{ input.score }},
   "doubled": {{ input.score * 2 }},
