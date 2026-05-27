@@ -3,15 +3,17 @@
 > A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out.
 
 > [!NOTE]
-> **Active development — milestones 1–4 / 8 implemented.** Everything
+> **Active development — milestones 1–5 / 8 implemented.** Everything
 > below is wired end-to-end with tests, examples, benchmarks, and a CLI
 > binary: literals, paths, operators, conditionals, `when`, ternary,
-> safe access (`?.` / `??`), `let` preamble, `this` self-reference, and
-> the compile-time dependency DAG that orders & cycle-checks them.
-> Collection methods (`.map` / `.filter` / `.fold`) and the persistence
-> blob are *designed but not yet built* — see
-> [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the build order and
-> [`DESIGN.md`](DESIGN.md) for the full language spec.
+> safe access (`?.` / `??`), `let` preamble, `this` self-reference and
+> the compile-time DAG, plus collection methods (`.map` / `.filter` /
+> `.fold` / `.length` / `.first` / `.last` / `.concat`), `x -> body`
+> lambdas, `arr[i]` indexing, and array literals in expressions. The
+> persistence blob (`to_bytes` / `from_bytes`) and the polish layer
+> (`validate` / `format` / multi-error diagnostics) are *designed but
+> not yet built* — see [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the
+> build order and [`DESIGN.md`](DESIGN.md) for the full language spec.
 
 ## Overview
 
@@ -27,31 +29,27 @@ reshape data, fast. A template compiles once and renders against many inputs.
 ## Example (what runs today)
 
 ```
-let user = input.user
+let items = input.items
+let total = items.fold(0, (acc, item) -> acc + item.price * item.qty)
 {
-  "name":           {{ user.name }},
-  "is_admin":       {{ user.role == "admin" }},
-  "level":          {{ when {
-    this.is_admin:           "full",
-    user.tenure >= 5:        "senior",
-    else:                    "standard"
-  } }},
-  "greeting":       {{ when {
-    this.is_admin:           "Welcome back, admin",
-    this.level == "senior":  "Hi there",
-    else:                    "Hello"
-  } }},
-  "show_dashboard": {{ this.is_admin || this.level == "senior" }}
+    "count":         {{ items.length() }},
+    "item_names":    {{ items.map(item -> item.name) }},
+    "discounted":    {{ items.filter(item -> item.price >= 5).map(item -> item.name) }},
+    "first_item":    {{ items[0].name }},
+    "total":         {{ total }},
+    "average":       {{ total / items.length() }},
+    "free_shipping": {{ this.total >= 50 }}
 }
 ```
 
-`let user = …` names a sub-expression once; `this.<key>` references
-earlier output fields, and the compiler runs a topological sort plus
-cycle check at compile time, so this template stays correct no matter
-how you reorder the keys.
+`let` names a sub-expression once. Methods chain naturally: `.filter(...)`
+narrows the list, `.map(...)` projects each element, `.fold(...)`
+collapses to a single value. Lambdas are `param -> body` or
+`(p1, p2) -> body` — bounded iteration only, no closures stored
+anywhere. `this.<key>` references other output keys; the compiler
+topo-sorts them and rejects cycles at compile time.
 
-The full design also extends to `.map` / `.filter` / `.fold` — see
-[`DESIGN.md`](DESIGN.md) for the language spec and the
+See [`DESIGN.md`](DESIGN.md) for the language spec and the
 implementation-status table below for what is wired up today.
 
 ## Quick start
@@ -103,7 +101,7 @@ The library itself stays lean — `serde_json` only enters the dep tree when the
 | Conditionals (`when` guards, ternary `?:`, short-circuit `&&`/`\|\|`) | ✅ |
 | Safe access `?.` and nullish coalesce `??` | ✅ |
 | `let` preamble, `this` self-reference, compile-time DAG (cycle detection) | ✅ |
-| `.map` / `.filter` / `.fold` with lambdas | 🟡 designed — milestone 5 |
+| Methods (`.map` / `.filter` / `.fold` / `.length` / `.first` / `.last` / `.concat`), `x -> body` lambdas, `arr[i]` indexing, array literals | ✅ |
 | Built-in functions (`round`, `upper`, …) | 🟡 designed — milestone 6 |
 | `to_bytes` / `from_bytes` (compiled blob) | 🟡 designed — milestone 7 |
 | `validate` / `format` / multi-error / diagnostics | 🟡 designed — milestone 8 |

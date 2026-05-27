@@ -45,6 +45,29 @@ pub enum RenderError {
     WhenNoMatch {
         span: Span,
     },
+    UnknownMethod {
+        method: String,
+        on_type: String,
+        span: Span,
+    },
+    ArityMismatch {
+        method: String,
+        expected: usize,
+        got: usize,
+        span: Span,
+    },
+    IndexOutOfBounds {
+        index: i64,
+        length: usize,
+        span: Span,
+    },
+    NotIndexable {
+        got: String,
+        span: Span,
+    },
+    LambdaExpected {
+        span: Span,
+    },
     Deserialize(String),
 }
 
@@ -83,6 +106,28 @@ impl fmt::Display for RenderError {
             RenderError::WhenNoMatch { .. } => {
                 write!(f, "no `when` branch matched and no `else` provided")
             }
+            RenderError::UnknownMethod {
+                method, on_type, ..
+            } => {
+                write!(f, "no method `{method}` on {on_type}")
+            }
+            RenderError::ArityMismatch {
+                method,
+                expected,
+                got,
+                ..
+            } => write!(
+                f,
+                "method `{method}` expects {expected} argument(s), got {got}"
+            ),
+            RenderError::IndexOutOfBounds { index, length, .. } => {
+                write!(
+                    f,
+                    "index {index} out of bounds for array of length {length}"
+                )
+            }
+            RenderError::NotIndexable { got, .. } => write!(f, "cannot index into {got}"),
+            RenderError::LambdaExpected { .. } => write!(f, "expected a lambda"),
             RenderError::Deserialize(msg) => write!(f, "deserialize error: {msg}"),
         }
     }

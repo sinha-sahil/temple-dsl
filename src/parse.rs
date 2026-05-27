@@ -27,6 +27,8 @@ pub struct Expr {
 pub enum ExprKind {
     Literal(Value),
     Path {
+        root: SmolStr,
+        root_span: Span,
         segments: Vec<PathSegment>,
     },
     Binary {
@@ -47,6 +49,11 @@ pub enum ExprKind {
         branches: Vec<WhenBranch>,
         fallback: Option<Box<Expr>>,
     },
+    Lambda {
+        params: Vec<LambdaParam>,
+        body: Box<Expr>,
+    },
+    ArrayLit(Vec<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,10 +86,27 @@ pub struct WhenBranch {
 }
 
 #[derive(Debug, Clone)]
-pub struct PathSegment {
+pub struct LambdaParam {
     pub name: SmolStr,
     pub span: Span,
-    pub optional: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum PathSegment {
+    Field {
+        name: SmolStr,
+        span: Span,
+        optional: bool,
+    },
+    Method {
+        name: SmolStr,
+        span: Span,
+        args: Vec<Expr>,
+    },
+    Index {
+        expr: Box<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +193,29 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+    }
+
+    fn skip_ws_at(&self, mut p: usize) -> usize {
+        while p < self.src.len() {
+            let b = self.src[p];
+            if b.is_ascii_whitespace() {
+                p += 1;
+            } else if b == b'#' {
+                while p < self.src.len() && self.src[p] != b'\n' {
+                    p += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        p
+    }
+
+    fn skip_ident_at(&self, mut p: usize) -> usize {
+        while p < self.src.len() && (self.src[p].is_ascii_alphanumeric() || self.src[p] == b'_') {
+            p += 1;
+        }
+        p
     }
 
     fn expect(&mut self, byte: u8) -> Result<(), CompileError> {
@@ -577,6 +624,32 @@ impl<'a> Parser<'a> {
                     span: Span::new(start, self.pos),
                 })
             }
+            Some(b'[') => {
+                self.pos += 1;
+                let mut items: Vec<Expr> = Vec::new();
+                self.skip_ws();
+                if self.peek() != Some(b']') {
+                    loop {
+                        self.skip_ws();
+                        items.push(self.parse_expr()?);
+                        self.skip_ws();
+                        if self.peek() == Some(b',') {
+                            self.pos += 1;
+                            self.skip_ws();
+                            if self.peek() == Some(b']') {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                self.expect(b']')?;
+                Ok(Expr {
+                    kind: ExprKind::ArrayLit(items),
+                    span: Span::new(start, self.pos),
+                })
+            }
             Some(c) if c.is_ascii_alphabetic() => {
                 let ident_start = self.pos;
                 let ident = self.read_ident();
@@ -596,39 +669,13 @@ impl<'a> Parser<'a> {
                     }),
                     "when" => self.parse_when_body(ident_start),
                     _ => {
-                        let mut segments = vec![PathSegment {
-                            name: ident,
-                            span: ident_span,
-                            optional: false,
-                        }];
-                        loop {
-                            self.skip_ws();
-                            let (advance, optional) = if self.matches("?.")
-                                && self
-                                    .peek_at(2)
-                                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-                            {
-                                (2, true)
-                            } else if self.peek() == Some(b'.')
-                                && self
-                                    .peek_at(1)
-                                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-                            {
-                                (1, false)
-                            } else {
-                                break;
-                            };
-                            self.pos += advance;
-                            let seg_start = self.pos;
-                            let name = self.read_ident();
-                            segments.push(PathSegment {
-                                name,
-                                span: Span::new(seg_start, self.pos),
-                                optional,
-                            });
-                        }
+                        let segments = self.parse_path_segments()?;
                         Ok(Expr {
-                            kind: ExprKind::Path { segments },
+                            kind: ExprKind::Path {
+                                root: ident,
+                                root_span: ident_span,
+                                segments,
+                            },
                             span: Span::new(ident_start, self.pos),
                         })
                     }
@@ -643,6 +690,211 @@ impl<'a> Parser<'a> {
                 span: Span::new(self.pos, self.pos),
             }),
         }
+    }
+
+    fn parse_path_segments(&mut self) -> Result<Vec<PathSegment>, CompileError> {
+        let mut segments: Vec<PathSegment> = Vec::new();
+        loop {
+            if self.peek() == Some(b'[') {
+                let istart = self.pos;
+                self.pos += 1;
+                self.skip_ws();
+                let inner = self.parse_expr()?;
+                self.skip_ws();
+                self.expect(b']')?;
+                let ispan = Span::new(istart, self.pos);
+                segments.push(PathSegment::Index {
+                    expr: Box::new(inner),
+                    span: ispan,
+                });
+                continue;
+            }
+            let saved = self.pos;
+            self.skip_ws();
+            if self.matches("?.")
+                && self
+                    .peek_at(2)
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            {
+                self.pos += 2;
+                let nstart = self.pos;
+                let name = self.read_ident();
+                let nspan = Span::new(nstart, self.pos);
+                segments.push(PathSegment::Field {
+                    name,
+                    span: nspan,
+                    optional: true,
+                });
+                continue;
+            }
+            if self.peek() == Some(b'.')
+                && self
+                    .peek_at(1)
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            {
+                self.pos += 1;
+                let nstart = self.pos;
+                let name = self.read_ident();
+                let nspan = Span::new(nstart, self.pos);
+                if self.peek() == Some(b'(') {
+                    let args = self.parse_method_args()?;
+                    segments.push(PathSegment::Method {
+                        name,
+                        span: nspan,
+                        args,
+                    });
+                } else {
+                    segments.push(PathSegment::Field {
+                        name,
+                        span: nspan,
+                        optional: false,
+                    });
+                }
+                continue;
+            }
+            self.pos = saved;
+            break;
+        }
+        Ok(segments)
+    }
+
+    fn parse_method_args(&mut self) -> Result<Vec<Expr>, CompileError> {
+        self.expect(b'(')?;
+        let mut args = Vec::new();
+        self.skip_ws();
+        if self.peek() != Some(b')') {
+            loop {
+                self.skip_ws();
+                args.push(self.parse_method_arg()?);
+                self.skip_ws();
+                if self.peek() == Some(b',') {
+                    self.pos += 1;
+                    self.skip_ws();
+                    if self.peek() == Some(b')') {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(b')')?;
+        Ok(args)
+    }
+
+    fn parse_method_arg(&mut self) -> Result<Expr, CompileError> {
+        if self.is_lambda_start() {
+            self.parse_lambda()
+        } else {
+            self.parse_expr()
+        }
+    }
+
+    fn is_lambda_start(&self) -> bool {
+        let mut p = self.skip_ws_at(self.pos);
+        if p >= self.src.len() {
+            return false;
+        }
+        if self.src[p] == b'(' {
+            p = self.skip_ws_at(p + 1);
+            if p < self.src.len() && self.src[p] == b')' {
+                p = self.skip_ws_at(p + 1);
+                return self.src.get(p) == Some(&b'-') && self.src.get(p + 1) == Some(&b'>');
+            }
+            loop {
+                if p >= self.src.len() {
+                    return false;
+                }
+                let s = p;
+                p = self.skip_ident_at(p);
+                if p == s {
+                    return false;
+                }
+                p = self.skip_ws_at(p);
+                if p >= self.src.len() {
+                    return false;
+                }
+                if self.src[p] == b',' {
+                    p = self.skip_ws_at(p + 1);
+                    continue;
+                }
+                if self.src[p] == b')' {
+                    p = self.skip_ws_at(p + 1);
+                    return self.src.get(p) == Some(&b'-') && self.src.get(p + 1) == Some(&b'>');
+                }
+                return false;
+            }
+        }
+        if self.src[p].is_ascii_alphabetic() || self.src[p] == b'_' {
+            let s = p;
+            p = self.skip_ident_at(p);
+            if p == s {
+                return false;
+            }
+            p = self.skip_ws_at(p);
+            return self.src.get(p) == Some(&b'-') && self.src.get(p + 1) == Some(&b'>');
+        }
+        false
+    }
+
+    fn parse_lambda(&mut self) -> Result<Expr, CompileError> {
+        let start = self.pos;
+        self.skip_ws();
+        let params: Vec<LambdaParam> = if self.peek() == Some(b'(') {
+            self.pos += 1;
+            let mut ps: Vec<LambdaParam> = Vec::new();
+            self.skip_ws();
+            if self.peek() != Some(b')') {
+                loop {
+                    self.skip_ws();
+                    let pstart = self.pos;
+                    let name = self.read_ident();
+                    if name.is_empty() {
+                        return Err(CompileError::Syntax {
+                            message: "expected lambda parameter name".into(),
+                            span: Span::new(pstart, pstart + 1),
+                        });
+                    }
+                    ps.push(LambdaParam {
+                        name,
+                        span: Span::new(pstart, self.pos),
+                    });
+                    self.skip_ws();
+                    if self.peek() == Some(b',') {
+                        self.pos += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(b')')?;
+            ps
+        } else {
+            let pstart = self.pos;
+            let name = self.read_ident();
+            if name.is_empty() {
+                return Err(CompileError::Syntax {
+                    message: "expected lambda parameter".into(),
+                    span: Span::new(pstart, pstart + 1),
+                });
+            }
+            vec![LambdaParam {
+                name,
+                span: Span::new(pstart, self.pos),
+            }]
+        };
+        self.skip_ws();
+        self.expect_str("->")?;
+        self.skip_ws();
+        let body = self.parse_expr()?;
+        let end = body.span.end as usize;
+        Ok(Expr {
+            kind: ExprKind::Lambda {
+                params,
+                body: Box::new(body),
+            },
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_let_binding(&mut self) -> Result<LetBinding, CompileError> {

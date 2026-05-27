@@ -1,0 +1,8 @@
+{
+  "items": [
+    { "name": "widget", "price": 9.99,  "qty": 2 },
+    { "name": "gadget", "price": 4.50,  "qty": 1 },
+    { "name": "gizmo",  "price": 19.99, "qty": 1 },
+    { "name": "thing",  "price": 2.00,  "qty": 3 }
+  ]
+}

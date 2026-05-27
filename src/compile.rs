@@ -1,6 +1,6 @@
 use crate::error::{CompileError, RenderError, Span};
 use crate::eval::{self, Scope};
-use crate::parse::{self, Expr, ExprKind, LetBinding, Module, OutKind, OutNode};
+use crate::parse::{self, Expr, ExprKind, LetBinding, Module, OutKind, OutNode, PathSegment};
 use crate::value::Value;
 use indexmap::IndexMap;
 use serde::de::DeserializeOwned;
@@ -65,11 +65,12 @@ impl Template {
 
 fn resolve(module: &Module) -> Result<Vec<usize>, Vec<CompileError>> {
     let mut errors: Vec<CompileError> = Vec::new();
+    let empty_params: HashSet<SmolStr> = HashSet::new();
 
     let mut known_lets: HashSet<SmolStr> = HashSet::new();
     for binding in &module.lets {
         validate_let_name(binding, &known_lets, &mut errors);
-        validate_expr(&binding.expr, &known_lets, None, &mut errors);
+        validate_expr(&binding.expr, &known_lets, None, &empty_params, &mut errors);
         if !RESERVED.contains(&binding.name.as_str()) {
             known_lets.insert(binding.name.clone());
         }
@@ -83,6 +84,7 @@ fn resolve(module: &Module) -> Result<Vec<usize>, Vec<CompileError>> {
         &module.output,
         &known_lets,
         output_keys.as_ref(),
+        &empty_params,
         &mut errors,
     );
 
@@ -126,70 +128,107 @@ fn validate_expr(
     expr: &Expr,
     lets: &HashSet<SmolStr>,
     output_keys: Option<&HashSet<SmolStr>>,
+    lambda_params: &HashSet<SmolStr>,
     errors: &mut Vec<CompileError>,
 ) {
     match &expr.kind {
         ExprKind::Literal(_) => {}
-        ExprKind::Path { segments } => {
-            let Some(root) = segments.first() else {
-                return;
-            };
-            let name = root.name.as_str();
-            match name {
+        ExprKind::Path {
+            root,
+            root_span,
+            segments,
+        } => {
+            match root.as_str() {
                 "input" => {}
                 "this" => match output_keys {
                     None => errors.push(CompileError::Syntax {
                         message: "'this' is only valid inside an object output".into(),
-                        span: root.span,
+                        span: *root_span,
                     }),
-                    Some(keys) => match segments.get(1) {
+                    Some(keys) => match segments.first() {
                         None => errors.push(CompileError::Syntax {
                             message: "'this' must be followed by '.<field>'".into(),
-                            span: root.span,
+                            span: *root_span,
                         }),
-                        Some(key_seg) => {
-                            if !keys.contains(&key_seg.name) {
+                        Some(PathSegment::Field { name, span, .. }) => {
+                            if !keys.contains(name) {
                                 errors.push(CompileError::Syntax {
-                                    message: format!("unknown output key 'this.{}'", key_seg.name),
-                                    span: key_seg.span,
+                                    message: format!("unknown output key 'this.{name}'"),
+                                    span: *span,
                                 });
                             }
                         }
+                        Some(_) => errors.push(CompileError::Syntax {
+                            message: "'this' must be followed by '.<field>'".into(),
+                            span: *root_span,
+                        }),
                     },
                 },
                 _ => {
-                    if !lets.contains(&root.name) {
+                    if !lets.contains(root) && !lambda_params.contains(root) {
                         errors.push(CompileError::Syntax {
-                            message: format!("unknown identifier '{name}'"),
-                            span: root.span,
+                            message: format!("unknown identifier '{root}'"),
+                            span: *root_span,
                         });
                     }
                 }
             }
+            for seg in segments {
+                match seg {
+                    PathSegment::Field { .. } => {}
+                    PathSegment::Method { args, .. } => {
+                        for a in args {
+                            validate_expr(a, lets, output_keys, lambda_params, errors);
+                        }
+                    }
+                    PathSegment::Index { expr, .. } => {
+                        validate_expr(expr, lets, output_keys, lambda_params, errors);
+                    }
+                }
+            }
+        }
+        ExprKind::Lambda { params, body } => {
+            let mut inner = lambda_params.clone();
+            for p in params {
+                if RESERVED.contains(&p.name.as_str()) {
+                    errors.push(CompileError::Syntax {
+                        message: format!("'{}' is a reserved name", p.name),
+                        span: p.span,
+                    });
+                } else {
+                    inner.insert(p.name.clone());
+                }
+            }
+            validate_expr(body, lets, output_keys, &inner, errors);
         }
         ExprKind::Binary { lhs, rhs, .. } => {
-            validate_expr(lhs, lets, output_keys, errors);
-            validate_expr(rhs, lets, output_keys, errors);
+            validate_expr(lhs, lets, output_keys, lambda_params, errors);
+            validate_expr(rhs, lets, output_keys, lambda_params, errors);
         }
         ExprKind::Unary { operand, .. } => {
-            validate_expr(operand, lets, output_keys, errors);
+            validate_expr(operand, lets, output_keys, lambda_params, errors);
         }
         ExprKind::Ternary {
             cond,
             then_branch,
             else_branch,
         } => {
-            validate_expr(cond, lets, output_keys, errors);
-            validate_expr(then_branch, lets, output_keys, errors);
-            validate_expr(else_branch, lets, output_keys, errors);
+            validate_expr(cond, lets, output_keys, lambda_params, errors);
+            validate_expr(then_branch, lets, output_keys, lambda_params, errors);
+            validate_expr(else_branch, lets, output_keys, lambda_params, errors);
         }
         ExprKind::When { branches, fallback } => {
             for b in branches {
-                validate_expr(&b.cond, lets, output_keys, errors);
-                validate_expr(&b.result, lets, output_keys, errors);
+                validate_expr(&b.cond, lets, output_keys, lambda_params, errors);
+                validate_expr(&b.result, lets, output_keys, lambda_params, errors);
             }
             if let Some(fb) = fallback {
-                validate_expr(fb, lets, output_keys, errors);
+                validate_expr(fb, lets, output_keys, lambda_params, errors);
+            }
+        }
+        ExprKind::ArrayLit(items) => {
+            for item in items {
+                validate_expr(item, lets, output_keys, lambda_params, errors);
             }
         }
     }
@@ -199,19 +238,20 @@ fn validate_out_node(
     node: &OutNode,
     lets: &HashSet<SmolStr>,
     output_keys: Option<&HashSet<SmolStr>>,
+    lambda_params: &HashSet<SmolStr>,
     errors: &mut Vec<CompileError>,
 ) {
     match &node.kind {
         OutKind::Literal(_) => {}
-        OutKind::Hole(expr) => validate_expr(expr, lets, output_keys, errors),
+        OutKind::Hole(expr) => validate_expr(expr, lets, output_keys, lambda_params, errors),
         OutKind::Object(fields) => {
             for (_, child) in fields {
-                validate_out_node(child, lets, output_keys, errors);
+                validate_out_node(child, lets, output_keys, lambda_params, errors);
             }
         }
         OutKind::Array(items) => {
             for item in items {
-                validate_out_node(item, lets, output_keys, errors);
+                validate_out_node(item, lets, output_keys, lambda_params, errors);
             }
         }
     }
@@ -289,13 +329,25 @@ fn collect_this_refs_in_out(node: &OutNode, refs: &mut HashSet<SmolStr>) {
 fn collect_this_refs_in_expr(expr: &Expr, refs: &mut HashSet<SmolStr>) {
     match &expr.kind {
         ExprKind::Literal(_) => {}
-        ExprKind::Path { segments } => {
-            if segments.first().map(|s| s.name.as_str()) == Some("this") {
-                if let Some(key_seg) = segments.get(1) {
-                    refs.insert(key_seg.name.clone());
+        ExprKind::Path { root, segments, .. } => {
+            if root.as_str() == "this" {
+                if let Some(PathSegment::Field { name, .. }) = segments.first() {
+                    refs.insert(name.clone());
+                }
+            }
+            for seg in segments {
+                match seg {
+                    PathSegment::Field { .. } => {}
+                    PathSegment::Method { args, .. } => {
+                        for a in args {
+                            collect_this_refs_in_expr(a, refs);
+                        }
+                    }
+                    PathSegment::Index { expr, .. } => collect_this_refs_in_expr(expr, refs),
                 }
             }
         }
+        ExprKind::Lambda { body, .. } => collect_this_refs_in_expr(body, refs),
         ExprKind::Binary { lhs, rhs, .. } => {
             collect_this_refs_in_expr(lhs, refs);
             collect_this_refs_in_expr(rhs, refs);
@@ -317,6 +369,11 @@ fn collect_this_refs_in_expr(expr: &Expr, refs: &mut HashSet<SmolStr>) {
             }
             if let Some(fb) = fallback {
                 collect_this_refs_in_expr(fb, refs);
+            }
+        }
+        ExprKind::ArrayLit(items) => {
+            for item in items {
+                collect_this_refs_in_expr(item, refs);
             }
         }
     }

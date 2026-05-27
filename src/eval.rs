@@ -1,5 +1,5 @@
 use crate::error::{RenderError, Span};
-use crate::parse::{BinOp, Expr, ExprKind, OutKind, OutNode, PathSegment, UnOp};
+use crate::parse::{BinOp, Expr, ExprKind, LambdaParam, OutKind, OutNode, PathSegment, UnOp};
 use crate::value::Value;
 use indexmap::IndexMap;
 use rust_decimal::Decimal;
@@ -43,7 +43,11 @@ pub fn evaluate_expr(
 ) -> Result<Value, RenderError> {
     match &expr.kind {
         ExprKind::Literal(v) => Ok(v.clone()),
-        ExprKind::Path { segments } => evaluate_path(segments, input, lets, this),
+        ExprKind::Path {
+            root,
+            root_span,
+            segments,
+        } => evaluate_path(root, *root_span, segments, input, lets, this),
         ExprKind::Binary { op, lhs, rhs } => {
             evaluate_binary(*op, lhs, rhs, expr.span, input, lets, this)
         }
@@ -75,6 +79,18 @@ pub fn evaluate_expr(
                 Some(fb) => evaluate_expr(fb, input, lets, this),
                 None => Err(RenderError::WhenNoMatch { span: expr.span }),
             }
+        }
+        ExprKind::Lambda { .. } => Err(RenderError::TypeMismatch {
+            expected: "value",
+            got: "lambda (only valid as a method argument)".to_string(),
+            span: expr.span,
+        }),
+        ExprKind::ArrayLit(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(evaluate_expr(item, input, lets, this)?);
+            }
+            Ok(Value::Arr(out))
         }
     }
 }
@@ -253,72 +269,244 @@ fn compare(l: &Value, r: &Value, span: Span) -> Result<Ordering, RenderError> {
 }
 
 fn evaluate_path(
+    root: &SmolStr,
+    root_span: Span,
     segments: &[PathSegment],
     input: &Value,
     lets: &Scope,
     this: &Scope,
 ) -> Result<Value, RenderError> {
-    let root = segments.first().ok_or(RenderError::TypeMismatch {
-        expected: "path",
-        got: "empty".to_string(),
-        span: Span::new(0, 0),
-    })?;
-    let root_name = root.name.as_str();
-
-    let (current, mut walked, start_idx): (&Value, Vec<String>, usize) = match root_name {
-        "input" => (input, vec!["input".to_string()], 1),
-        "this" => {
-            let key_seg = segments.get(1).ok_or(RenderError::TypeMismatch {
-                expected: "'this' followed by '.field'",
-                got: "bare 'this'".to_string(),
-                span: root.span,
-            })?;
-            let v = this.get(&key_seg.name).ok_or(RenderError::MissingPath {
-                path: format!("this.{}", key_seg.name),
-                key: Some(key_seg.name.to_string()),
-                span: key_seg.span,
-            })?;
-            (v, vec!["this".to_string(), key_seg.name.to_string()], 2)
-        }
-        _ => {
-            let v = lets.get(&root.name).ok_or(RenderError::TypeMismatch {
-                expected: "known identifier",
-                got: root_name.to_string(),
-                span: root.span,
-            })?;
-            (v, vec![root_name.to_string()], 1)
-        }
-    };
-
-    let mut current = current;
-    for segment in &segments[start_idx..] {
-        walked.push(segment.name.to_string());
-
-        if segment.optional && matches!(current, Value::Null) {
-            return Ok(Value::Null);
-        }
-
-        match current {
-            Value::Obj(obj) => match obj.get(&segment.name) {
-                Some(value) => current = value,
-                None if segment.optional => return Ok(Value::Null),
+    let (mut current, start_idx): (Value, usize) = match root.as_str() {
+        "input" => (input.clone(), 0),
+        "this" => match segments.first() {
+            Some(PathSegment::Field { name, span, .. }) => match this.get(name) {
+                Some(v) => (v.clone(), 1),
                 None => {
                     return Err(RenderError::MissingPath {
-                        path: walked.join("."),
-                        key: Some(segment.name.to_string()),
-                        span: segment.span,
+                        path: format!("this.{name}"),
+                        key: Some(name.to_string()),
+                        span: *span,
                     });
                 }
             },
-            other => {
+            _ => {
                 return Err(RenderError::TypeMismatch {
-                    expected: "object",
-                    got: other.kind().to_string(),
-                    span: segment.span,
+                    expected: "'this' followed by '.field'",
+                    got: "bare 'this'".to_string(),
+                    span: root_span,
                 });
+            }
+        },
+        _ => match lets.get(root) {
+            Some(v) => (v.clone(), 0),
+            None => {
+                return Err(RenderError::TypeMismatch {
+                    expected: "known identifier",
+                    got: root.to_string(),
+                    span: root_span,
+                });
+            }
+        },
+    };
+
+    for segment in &segments[start_idx..] {
+        match segment {
+            PathSegment::Field {
+                name,
+                span,
+                optional,
+            } => {
+                if *optional && matches!(current, Value::Null) {
+                    return Ok(Value::Null);
+                }
+                current = match current {
+                    Value::Obj(obj) => match obj.get(name) {
+                        Some(v) => v.clone(),
+                        None if *optional => return Ok(Value::Null),
+                        None => {
+                            return Err(RenderError::MissingPath {
+                                path: name.to_string(),
+                                key: Some(name.to_string()),
+                                span: *span,
+                            });
+                        }
+                    },
+                    other => {
+                        return Err(RenderError::TypeMismatch {
+                            expected: "object",
+                            got: other.kind().to_string(),
+                            span: *span,
+                        });
+                    }
+                };
+            }
+            PathSegment::Method {
+                name, span, args, ..
+            } => {
+                current = call_method(&current, name, args, *span, input, lets, this)?;
+            }
+            PathSegment::Index { expr, span } => {
+                let idx = evaluate_expr(expr, input, lets, this)?;
+                current = index_value(&current, &idx, *span)?;
             }
         }
     }
 
-    Ok(current.clone())
+    Ok(current)
+}
+
+fn index_value(receiver: &Value, idx: &Value, span: Span) -> Result<Value, RenderError> {
+    match (receiver, idx) {
+        (Value::Arr(a), Value::Int(i)) => {
+            if *i < 0 {
+                return Err(RenderError::IndexOutOfBounds {
+                    index: *i,
+                    length: a.len(),
+                    span,
+                });
+            }
+            let u = *i as usize;
+            if u >= a.len() {
+                return Err(RenderError::IndexOutOfBounds {
+                    index: *i,
+                    length: a.len(),
+                    span,
+                });
+            }
+            Ok(a[u].clone())
+        }
+        (Value::Arr(_), other) => Err(RenderError::TypeMismatch {
+            expected: "integer index",
+            got: other.kind().to_string(),
+            span,
+        }),
+        (other, _) => Err(RenderError::NotIndexable {
+            got: other.kind().to_string(),
+            span,
+        }),
+    }
+}
+
+fn call_method(
+    receiver: &Value,
+    method: &SmolStr,
+    args: &[Expr],
+    span: Span,
+    input: &Value,
+    lets: &Scope,
+    this: &Scope,
+) -> Result<Value, RenderError> {
+    match (receiver, method.as_str()) {
+        (Value::Arr(arr), "length") => {
+            check_arity(method, args, 0, span)?;
+            Ok(Value::Int(arr.len() as i64))
+        }
+        (Value::Str(s), "length") => {
+            check_arity(method, args, 0, span)?;
+            Ok(Value::Int(s.chars().count() as i64))
+        }
+        (Value::Arr(arr), "first") => {
+            check_arity(method, args, 0, span)?;
+            Ok(arr.first().cloned().unwrap_or(Value::Null))
+        }
+        (Value::Arr(arr), "last") => {
+            check_arity(method, args, 0, span)?;
+            Ok(arr.last().cloned().unwrap_or(Value::Null))
+        }
+        (Value::Arr(a), "concat") => {
+            check_arity(method, args, 1, span)?;
+            let other = evaluate_expr(&args[0], input, lets, this)?;
+            match other {
+                Value::Arr(b) => {
+                    let mut result = a.clone();
+                    result.extend(b);
+                    Ok(Value::Arr(result))
+                }
+                v => Err(RenderError::TypeMismatch {
+                    expected: "array",
+                    got: v.kind().to_string(),
+                    span,
+                }),
+            }
+        }
+        (Value::Arr(arr), "map") => {
+            check_arity(method, args, 1, span)?;
+            let lambda = &args[0];
+            let mut result = Vec::with_capacity(arr.len());
+            for elem in arr {
+                let v = call_lambda(lambda, std::slice::from_ref(elem), input, lets, this)?;
+                result.push(v);
+            }
+            Ok(Value::Arr(result))
+        }
+        (Value::Arr(arr), "filter") => {
+            check_arity(method, args, 1, span)?;
+            let lambda = &args[0];
+            let mut result = Vec::new();
+            for elem in arr {
+                let v = call_lambda(lambda, std::slice::from_ref(elem), input, lets, this)?;
+                if require_bool(&v, lambda.span)? {
+                    result.push(elem.clone());
+                }
+            }
+            Ok(Value::Arr(result))
+        }
+        (Value::Arr(arr), "fold") => {
+            check_arity(method, args, 2, span)?;
+            let mut acc = evaluate_expr(&args[0], input, lets, this)?;
+            let lambda = &args[1];
+            for elem in arr {
+                acc = call_lambda(lambda, &[acc.clone(), elem.clone()], input, lets, this)?;
+            }
+            Ok(acc)
+        }
+        (other, _) => Err(RenderError::UnknownMethod {
+            method: method.to_string(),
+            on_type: other.kind().to_string(),
+            span,
+        }),
+    }
+}
+
+fn call_lambda(
+    lambda: &Expr,
+    arg_values: &[Value],
+    input: &Value,
+    lets: &Scope,
+    this: &Scope,
+) -> Result<Value, RenderError> {
+    let (params, body): (&[LambdaParam], &Expr) = match &lambda.kind {
+        ExprKind::Lambda { params, body } => (params, body),
+        _ => return Err(RenderError::LambdaExpected { span: lambda.span }),
+    };
+    if params.len() != arg_values.len() {
+        return Err(RenderError::ArityMismatch {
+            method: "lambda".to_string(),
+            expected: params.len(),
+            got: arg_values.len(),
+            span: lambda.span,
+        });
+    }
+    let mut local_lets = lets.clone();
+    for (param, value) in params.iter().zip(arg_values.iter()) {
+        local_lets.insert(param.name.clone(), value.clone());
+    }
+    evaluate_expr(body, input, &local_lets, this)
+}
+
+fn check_arity(
+    method: &SmolStr,
+    args: &[Expr],
+    expected: usize,
+    span: Span,
+) -> Result<(), RenderError> {
+    if args.len() != expected {
+        return Err(RenderError::ArityMismatch {
+            method: method.to_string(),
+            expected,
+            got: args.len(),
+            span,
+        });
+    }
+    Ok(())
 }
