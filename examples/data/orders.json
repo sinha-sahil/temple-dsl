@@ -1,0 +1,7 @@
+{
+  "customer": "Ada",
+  "items": [
+    { "name": "widget", "qty": 6, "price": 9.99 },
+    { "name": "gadget", "qty": 2, "price": 14.50 }
+  ]
+}

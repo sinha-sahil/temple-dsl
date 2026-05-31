@@ -3,16 +3,21 @@
 > A small, fast Rust DSL for shaping data — input in, strongly-typed Rust value out.
 
 > [!NOTE]
-> **Active development — milestones 1–5 / 8 implemented.** Everything
+> **Active development — milestones 1–6 / 8 implemented.** Everything
 > below is wired end-to-end with tests, examples, benchmarks, and a CLI
 > binary: literals, paths, operators, conditionals, `when`, ternary,
 > safe access (`?.` / `??`), `let` preamble, `this` self-reference and
-> the compile-time DAG, plus collection methods (`.map` / `.filter` /
-> `.fold` / `.length` / `.first` / `.last` / `.concat`), `x -> body`
-> lambdas, `arr[i]` indexing, and array literals in expressions. The
-> persistence blob (`to_bytes` / `from_bytes`) and the polish layer
-> (`validate` / `format` / multi-error diagnostics) are *designed but
-> not yet built* — see [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the
+> the compile-time DAG, collection methods (`.map` / `.filter` / `.fold`
+> / `.sum` / `.any` / `.all` / `.len` / `.first` / `.last` / `.concat`),
+> `x -> body` lambdas, `arr[i]` indexing, array **and object** literals,
+> string interpolation (`"Hi {{ name }}"`), and built-in functions
+> (`abs`, `round`, `floor`, `ceil`, `min`, `max`, `upper`, `lower`,
+> `trim`, `to_string`, `len`). The engine upholds its **no-panic**
+> guarantee end-to-end — checked decimal arithmetic and parser
+> depth/size caps (`validate(src)` runs the same checks). Still pending:
+> the persistence blob (`to_bytes` / `from_bytes`, milestone 7) and the
+> diagnostics polish (`format`, multi-error reporting, source underlines,
+> milestone 8) — see [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the
 > build order and [`DESIGN.md`](DESIGN.md) for the full language spec.
 
 ## Overview
@@ -30,17 +35,18 @@ reshape data, fast. A template compiles once and renders against many inputs.
 
 ```
 let items = input.items
-let total = items.fold(0, (acc, item) -> acc + item.price * item.qty)
 {
-    "count":         {{ items.length() }},
-    "item_names":    {{ items.map(item -> item.name) }},
-    "discounted":    {{ items.filter(item -> item.price >= 5).map(item -> item.name) }},
-    "first_item":    {{ items[0].name }},
-    "total":         {{ total }},
-    "average":       {{ total / items.length() }},
-    "free_shipping": {{ this.total >= 50 }}
+    "summary":  "{{ input.customer }} ordered {{ items.length() }} item(s)",
+    "lines":    {{ items.map(it -> { "name": it.name, "total": it.qty * it.price }) }},
+    "subtotal": {{ items.map(it -> it.qty * it.price).sum() }},
+    "any_bulk": {{ items.any(it -> it.qty >= 5) }},
+    "receipt":  "Total due: {{ this.subtotal }}"
 }
 ```
+
+`map` reshapes each element into a new **object literal**, quoted strings
+**interpolate** `{{ … }}` holes, `this.subtotal` reads a sibling key, and the
+whole thing compiles once and renders against many inputs.
 
 `let` names a sub-expression once. Methods chain naturally: `.filter(...)`
 narrows the list, `.map(...)` projects each element, `.fold(...)`
@@ -96,15 +102,18 @@ The library itself stays lean — `serde_json` only enters the dep tree when the
 | Decimal-correct arithmetic via `rust_decimal` | ✅ |
 | Typed output — serde `Deserializer` over `&Value` | ✅ |
 | Compile once, render many (in-memory `Template`) | ✅ |
-| `Result` everywhere, no panics | ✅ |
+| `Result` everywhere, no panics (checked arithmetic, parser depth/size caps) | ✅ |
 | Operators (`+ - * /`, comparison, logical, unary `-`/`!`, parens) | ✅ |
 | Conditionals (`when` guards, ternary `?:`, short-circuit `&&`/`\|\|`) | ✅ |
 | Safe access `?.` and nullish coalesce `??` | ✅ |
 | `let` preamble, `this` self-reference, compile-time DAG (cycle detection) | ✅ |
-| Methods (`.map` / `.filter` / `.fold` / `.length` / `.first` / `.last` / `.concat`), `x -> body` lambdas, `arr[i]` indexing, array literals | ✅ |
-| Built-in functions (`round`, `upper`, …) | 🟡 designed — milestone 6 |
+| Methods (`.map` / `.filter` / `.fold` / `.sum` / `.any` / `.all` / `.len` / `.first` / `.last` / `.concat`), `x -> body` lambdas, `arr[i]` indexing | ✅ |
+| Constructors: array literals `[…]` and object literals `{ "k": expr }` in expressions | ✅ |
+| String interpolation in quoted holes — `"Hi {{ input.name }}"` | ✅ |
+| Built-in functions: `abs`, `round`, `floor`, `ceil`, `min`, `max`, `upper`, `lower`, `trim`, `to_string`, `len` | ✅ |
+| `validate(src)` author-time check; size/depth caps (early rejection) | ✅ |
 | `to_bytes` / `from_bytes` (compiled blob) | 🟡 designed — milestone 7 |
-| `validate` / `format` / multi-error / diagnostics | 🟡 designed — milestone 8 |
+| `format` / multi-error reporting / source-underline diagnostics | 🟡 designed — milestone 8 |
 
 ## Performance (MVP, tree-walking evaluator)
 

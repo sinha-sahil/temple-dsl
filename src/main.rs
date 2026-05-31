@@ -71,13 +71,12 @@ fn json_to_value(v: serde_json::Value) -> Value {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                f.to_string()
+            } else {
+                // Parse the verbatim token as exact Decimal — no lossy f64 detour.
+                n.to_string()
                     .parse::<Decimal>()
                     .map(Value::Decimal)
                     .unwrap_or(Value::Null)
-            } else {
-                Value::Null
             }
         }
         serde_json::Value::String(s) => Value::Str(s.into()),

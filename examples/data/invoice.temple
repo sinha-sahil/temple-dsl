@@ -1,0 +1,12 @@
+let prices = input.lines.map(line -> line.price)
+{
+    "customer":   {{ upper(input.customer) }},
+    "items":      {{ input.lines.map(line -> upper(line.name)) }},
+    "item_count": {{ len(input.lines) }},
+    "subtotal":   {{ prices.fold(0, (acc, p) -> acc + p) }},
+    "tax":        {{ round(this.subtotal * input.tax_rate, 2) }},
+    "total":      {{ this.subtotal + this.tax }},
+    "highest":    {{ prices.fold(0, (acc, p) -> max(acc, p)) }},
+    "lowest":     {{ prices.fold(this.subtotal, (acc, p) -> min(acc, p)) }},
+    "savings":    {{ floor(this.subtotal * 0.10) }}
+}

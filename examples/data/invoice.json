@@ -1,0 +1,9 @@
+{
+  "customer": "ada lovelace",
+  "tax_rate": 0.0825,
+  "lines": [
+    { "name": "widget", "price": 9.99 },
+    { "name": "gadget", "price": 4.50 },
+    { "name": "gizmo",  "price": 19.99 }
+  ]
+}

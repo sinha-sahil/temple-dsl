@@ -1,6 +1,8 @@
 use crate::error::{CompileError, RenderError, Span};
 use crate::eval::{self, Scope};
-use crate::parse::{self, Expr, ExprKind, LetBinding, Module, OutKind, OutNode, PathSegment};
+use crate::parse::{
+    self, Expr, ExprKind, InterpPart, LetBinding, Module, OutKind, OutNode, PathSegment,
+};
 use crate::value::Value;
 use indexmap::IndexMap;
 use serde::de::DeserializeOwned;
@@ -11,6 +13,9 @@ const RESERVED: &[&str] = &[
     "input", "this", "let", "when", "else", "true", "false", "null",
 ];
 
+/// Source-size cap, rejected at compile so a pathological template never reaches render.
+const MAX_SOURCE_BYTES: usize = 1 << 20; // 1 MiB
+
 #[derive(Debug, Clone)]
 pub struct Template {
     module: Module,
@@ -19,12 +24,25 @@ pub struct Template {
 
 impl Template {
     pub fn compile(src: &str) -> Result<Self, Vec<CompileError>> {
+        if src.len() > MAX_SOURCE_BYTES {
+            return Err(vec![CompileError::TooLarge {
+                bytes: src.len(),
+                limit: MAX_SOURCE_BYTES,
+            }]);
+        }
         let module = parse::parse(src)?;
         let output_order = resolve(&module)?;
         Ok(Template {
             module,
             output_order,
         })
+    }
+
+    /// Author-time check: run the full compile pipeline (parse, validate, DAG,
+    /// caps) and discard the result, reporting any problems. Cheap to call from
+    /// a save handler or editor integration.
+    pub fn validate(src: &str) -> Result<(), Vec<CompileError>> {
+        Self::compile(src).map(|_| ())
     }
 
     pub fn render<T>(&self, input: impl Into<Value>) -> Result<T, RenderError>
@@ -231,6 +249,33 @@ fn validate_expr(
                 validate_expr(item, lets, output_keys, lambda_params, errors);
             }
         }
+        ExprKind::ObjectLit(entries) => {
+            let mut seen: HashSet<&SmolStr> = HashSet::new();
+            for (k, e) in entries {
+                if !seen.insert(k) {
+                    errors.push(CompileError::Syntax {
+                        message: format!("duplicate key '{k}' in object literal"),
+                        span: e.span,
+                    });
+                }
+                validate_expr(e, lets, output_keys, lambda_params, errors);
+            }
+        }
+        ExprKind::FuncCall {
+            name,
+            name_span,
+            args,
+        } => {
+            if !eval::is_known_function(name) {
+                errors.push(CompileError::Syntax {
+                    message: format!("unknown function '{name}'"),
+                    span: *name_span,
+                });
+            }
+            for a in args {
+                validate_expr(a, lets, output_keys, lambda_params, errors);
+            }
+        }
     }
 }
 
@@ -245,13 +290,27 @@ fn validate_out_node(
         OutKind::Literal(_) => {}
         OutKind::Hole(expr) => validate_expr(expr, lets, output_keys, lambda_params, errors),
         OutKind::Object(fields) => {
-            for (_, child) in fields {
+            let mut seen: HashSet<&SmolStr> = HashSet::new();
+            for (k, child) in fields {
+                if !seen.insert(k) {
+                    errors.push(CompileError::Syntax {
+                        message: format!("duplicate output key '{k}'"),
+                        span: child.span,
+                    });
+                }
                 validate_out_node(child, lets, output_keys, lambda_params, errors);
             }
         }
         OutKind::Array(items) => {
             for item in items {
                 validate_out_node(item, lets, output_keys, lambda_params, errors);
+            }
+        }
+        OutKind::Interp(parts) => {
+            for part in parts {
+                if let InterpPart::Hole(expr) = part {
+                    validate_expr(expr, lets, output_keys, lambda_params, errors);
+                }
             }
         }
     }
@@ -323,6 +382,13 @@ fn collect_this_refs_in_out(node: &OutNode, refs: &mut HashSet<SmolStr>) {
                 collect_this_refs_in_out(item, refs);
             }
         }
+        OutKind::Interp(parts) => {
+            for part in parts {
+                if let InterpPart::Hole(expr) = part {
+                    collect_this_refs_in_expr(expr, refs);
+                }
+            }
+        }
     }
 }
 
@@ -374,6 +440,16 @@ fn collect_this_refs_in_expr(expr: &Expr, refs: &mut HashSet<SmolStr>) {
         ExprKind::ArrayLit(items) => {
             for item in items {
                 collect_this_refs_in_expr(item, refs);
+            }
+        }
+        ExprKind::ObjectLit(entries) => {
+            for (_, e) in entries {
+                collect_this_refs_in_expr(e, refs);
+            }
+        }
+        ExprKind::FuncCall { args, .. } => {
+            for a in args {
+                collect_this_refs_in_expr(a, refs);
             }
         }
     }

@@ -22,6 +22,8 @@ impl Span {
 #[derive(Debug, Clone)]
 pub enum CompileError {
     Syntax { message: String, span: Span },
+    TooDeep { limit: usize, span: Span },
+    TooLarge { bytes: usize, limit: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +87,19 @@ impl fmt::Display for CompileError {
                     f,
                     "syntax error at {}..{}: {}",
                     span.start, span.end, message
+                )
+            }
+            CompileError::TooDeep { limit, span } => {
+                write!(
+                    f,
+                    "template nests too deeply at {}..{}: exceeds the limit of {} levels",
+                    span.start, span.end, limit
+                )
+            }
+            CompileError::TooLarge { bytes, limit } => {
+                write!(
+                    f,
+                    "template is too large: {bytes} bytes exceeds the limit of {limit} bytes"
                 )
             }
         }

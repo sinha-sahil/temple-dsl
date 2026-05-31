@@ -15,6 +15,13 @@ pub enum OutKind {
     Hole(Expr),
     Object(Vec<(SmolStr, OutNode)>),
     Array(Vec<OutNode>),
+    Interp(Vec<InterpPart>),
+}
+
+#[derive(Debug, Clone)]
+pub enum InterpPart {
+    Text(SmolStr),
+    Hole(Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +61,12 @@ pub enum ExprKind {
         body: Box<Expr>,
     },
     ArrayLit(Vec<Expr>),
+    ObjectLit(Vec<(SmolStr, Expr)>),
+    FuncCall {
+        name: SmolStr,
+        name_span: Span,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,15 +160,20 @@ pub fn parse(src: &str) -> Result<Module, Vec<CompileError>> {
                 "expected end of input, found '{}'",
                 p.peek_char().unwrap_or('?')
             ),
-            span: Span::new(p.pos, p.pos + 1),
+            span: p.cur_char_span(),
         }]);
     }
     Ok(Module { lets, output })
 }
 
+/// Parser nesting cap. One level can push the whole precedence chain (~11 frames),
+/// so this stays well under the stack-overflow point — don't raise it casually.
+const MAX_DEPTH: usize = 64;
+
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -163,6 +181,14 @@ impl<'a> Parser<'a> {
         Self {
             src: src.as_bytes(),
             pos: 0,
+            depth: 0,
+        }
+    }
+
+    fn too_deep(&self) -> CompileError {
+        CompileError::TooDeep {
+            limit: MAX_DEPTH,
+            span: Span::new(self.pos, self.pos),
         }
     }
 
@@ -171,7 +197,19 @@ impl<'a> Parser<'a> {
     }
 
     fn peek_char(&self) -> Option<char> {
-        self.peek().map(|b| b as char)
+        let b = self.peek()?;
+        let len = utf8_len(b);
+        std::str::from_utf8(self.src.get(self.pos..self.pos + len)?)
+            .ok()?
+            .chars()
+            .next()
+    }
+
+    /// Span covering exactly the codepoint at the cursor, so error spans always
+    /// land on UTF-8 char boundaries (never mid-codepoint).
+    fn cur_char_span(&self) -> Span {
+        let w = self.peek().map_or(0, utf8_len);
+        Span::new(self.pos, self.pos + w)
     }
 
     fn peek_at(&self, offset: usize) -> Option<u8> {
@@ -226,7 +264,7 @@ impl<'a> Parser<'a> {
             }
             _ => Err(CompileError::Syntax {
                 message: format!("expected '{}'", byte as char),
-                span: Span::new(self.pos, self.pos.saturating_add(1)),
+                span: self.cur_char_span(),
             }),
         }
     }
@@ -256,6 +294,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_output(&mut self) -> Result<OutNode, CompileError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(self.too_deep());
+        }
+        let r = self.parse_output_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_output_inner(&mut self) -> Result<OutNode, CompileError> {
         self.skip_ws();
         let start = self.pos;
 
@@ -266,13 +315,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(b'{') => self.parse_object(),
             Some(b'[') => self.parse_array(),
-            Some(b'"') => {
-                let v = self.parse_double_quoted_string()?;
-                Ok(OutNode {
-                    kind: OutKind::Literal(Value::Str(v)),
-                    span: Span::new(start, self.pos),
-                })
-            }
+            Some(b'"') => self.parse_interp_string(start),
             Some(b'\'') => {
                 let v = self.parse_single_quoted_string()?;
                 Ok(OutNode {
@@ -294,9 +337,9 @@ impl<'a> Parser<'a> {
                     span: Span::new(start, self.pos),
                 })
             }
-            Some(c) => Err(CompileError::Syntax {
-                message: format!("unexpected '{}'", c as char),
-                span: Span::new(self.pos, self.pos + 1),
+            Some(_) => Err(CompileError::Syntax {
+                message: format!("unexpected '{}'", self.peek_char().unwrap_or('?')),
+                span: self.cur_char_span(),
             }),
             None => Err(CompileError::Syntax {
                 message: "unexpected end of input".into(),
@@ -364,6 +407,86 @@ impl<'a> Parser<'a> {
             kind: OutKind::Array(items),
             span: Span::new(start, self.pos),
         })
+    }
+
+    /// Parse an output-position double-quoted string, splitting `{{ expr }}` holes
+    /// for interpolation; with no holes it collapses to a plain literal.
+    fn parse_interp_string(&mut self, start: usize) -> Result<OutNode, CompileError> {
+        self.expect(b'"')?;
+        let mut parts: Vec<InterpPart> = Vec::new();
+        let mut buf: Vec<u8> = Vec::new();
+        let flush = |buf: &mut Vec<u8>, parts: &mut Vec<InterpPart>| {
+            if !buf.is_empty() {
+                let text = String::from_utf8(std::mem::take(buf)).unwrap_or_default();
+                parts.push(InterpPart::Text(SmolStr::new(text)));
+            }
+        };
+        loop {
+            match self.peek() {
+                None => {
+                    return Err(CompileError::Syntax {
+                        message: "unterminated string".into(),
+                        span: Span::new(start, self.pos),
+                    });
+                }
+                Some(b'"') => {
+                    self.pos += 1;
+                    break;
+                }
+                Some(b'\\') => {
+                    self.pos += 1;
+                    match self.peek() {
+                        Some(b'n') => buf.push(b'\n'),
+                        Some(b't') => buf.push(b'\t'),
+                        Some(b'r') => buf.push(b'\r'),
+                        Some(b'"') => buf.push(b'"'),
+                        Some(b'\'') => buf.push(b'\''),
+                        Some(b'\\') => buf.push(b'\\'),
+                        Some(other) => {
+                            buf.push(b'\\');
+                            buf.push(other);
+                        }
+                        None => {
+                            buf.push(b'\\');
+                            continue;
+                        }
+                    }
+                    self.pos += 1;
+                }
+                Some(b'{') if self.peek_at(1) == Some(b'{') => {
+                    flush(&mut buf, &mut parts);
+                    self.pos += 2;
+                    self.skip_ws();
+                    let expr = self.parse_expr()?;
+                    self.skip_ws();
+                    self.expect_str("}}")?;
+                    parts.push(InterpPart::Hole(expr));
+                }
+                Some(b) => {
+                    buf.push(b);
+                    self.pos += 1;
+                }
+            }
+        }
+        flush(&mut buf, &mut parts);
+        let span = Span::new(start, self.pos);
+        if parts.iter().any(|p| matches!(p, InterpPart::Hole(_))) {
+            Ok(OutNode {
+                kind: OutKind::Interp(parts),
+                span,
+            })
+        } else {
+            let mut s = String::new();
+            for p in &parts {
+                if let InterpPart::Text(t) = p {
+                    s.push_str(t);
+                }
+            }
+            Ok(OutNode {
+                kind: OutKind::Literal(Value::Str(SmolStr::new(s))),
+                span,
+            })
+        }
     }
 
     fn parse_hole(&mut self) -> Result<OutNode, CompileError> {
@@ -546,6 +669,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, CompileError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(self.too_deep());
+        }
+        let r = self.parse_unary_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_unary_inner(&mut self) -> Result<Expr, CompileError> {
         self.skip_ws();
         let start = self.pos;
         if self.peek() == Some(b'!') {
@@ -650,6 +784,37 @@ impl<'a> Parser<'a> {
                     span: Span::new(start, self.pos),
                 })
             }
+            Some(b'{') => {
+                self.pos += 1;
+                let mut entries: Vec<(SmolStr, Expr)> = Vec::new();
+                self.skip_ws();
+                if self.peek() != Some(b'}') {
+                    loop {
+                        self.skip_ws();
+                        let key = self.parse_double_quoted_string()?;
+                        self.skip_ws();
+                        self.expect(b':')?;
+                        self.skip_ws();
+                        let value = self.parse_expr()?;
+                        entries.push((key, value));
+                        self.skip_ws();
+                        if self.peek() == Some(b',') {
+                            self.pos += 1;
+                            self.skip_ws();
+                            if self.peek() == Some(b'}') {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                self.expect(b'}')?;
+                Ok(Expr {
+                    kind: ExprKind::ObjectLit(entries),
+                    span: Span::new(start, self.pos),
+                })
+            }
             Some(c) if c.is_ascii_alphabetic() => {
                 let ident_start = self.pos;
                 let ident = self.read_ident();
@@ -669,21 +834,36 @@ impl<'a> Parser<'a> {
                     }),
                     "when" => self.parse_when_body(ident_start),
                     _ => {
-                        let segments = self.parse_path_segments()?;
-                        Ok(Expr {
-                            kind: ExprKind::Path {
-                                root: ident,
-                                root_span: ident_span,
-                                segments,
-                            },
-                            span: Span::new(ident_start, self.pos),
-                        })
+                        if self.peek() == Some(b'(') {
+                            let args = self.parse_method_args()?;
+                            Ok(Expr {
+                                kind: ExprKind::FuncCall {
+                                    name: ident,
+                                    name_span: ident_span,
+                                    args,
+                                },
+                                span: Span::new(ident_start, self.pos),
+                            })
+                        } else {
+                            let segments = self.parse_path_segments()?;
+                            Ok(Expr {
+                                kind: ExprKind::Path {
+                                    root: ident,
+                                    root_span: ident_span,
+                                    segments,
+                                },
+                                span: Span::new(ident_start, self.pos),
+                            })
+                        }
                     }
                 }
             }
-            Some(c) => Err(CompileError::Syntax {
-                message: format!("unexpected '{}' in expression", c as char),
-                span: Span::new(self.pos, self.pos + 1),
+            Some(_) => Err(CompileError::Syntax {
+                message: format!(
+                    "unexpected '{}' in expression",
+                    self.peek_char().unwrap_or('?')
+                ),
+                span: self.cur_char_span(),
             }),
             None => Err(CompileError::Syntax {
                 message: "expected expression, found end of input".into(),
@@ -976,7 +1156,7 @@ impl<'a> Parser<'a> {
                     "expected ',' or '}}' in `when` table, found '{}'",
                     self.peek_char().unwrap_or('?')
                 ),
-                span: Span::new(self.pos, self.pos + 1),
+                span: self.cur_char_span(),
             });
         }
         let end = self.pos;
@@ -1064,15 +1244,22 @@ impl<'a> Parser<'a> {
             }
         }
         let mut is_decimal = false;
-        if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
-            is_decimal = true;
-            self.pos += 1;
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.pos += 1;
-                } else {
-                    break;
+        if self.peek() == Some(b'.') {
+            if self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
+                is_decimal = true;
+                self.pos += 1;
+                while let Some(b) = self.peek() {
+                    if b.is_ascii_digit() {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
                 }
+            } else {
+                return Err(CompileError::Syntax {
+                    message: "malformed number: expected a digit after '.'".into(),
+                    span: Span::new(start, self.pos + 1),
+                });
             }
         }
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
@@ -1106,6 +1293,19 @@ impl<'a> Parser<'a> {
                 span,
             }),
         }
+    }
+}
+
+/// Byte length of the UTF-8 codepoint led by `b`; a stray byte counts as 1.
+fn utf8_len(b: u8) -> usize {
+    if b < 0xC0 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
     }
 }
 

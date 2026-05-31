@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::de::{self, IntoDeserializer, Visitor};
 use smol_str::SmolStr;
@@ -153,6 +154,28 @@ impl<'de> de::Deserializer<'de> for &'de Value {
         }
     }
 
+    // An f64 target field is an explicit opt-in; the model itself carries no f64.
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self {
+            Value::Int(i) => visitor.visit_f64(*i as f64),
+            Value::Decimal(d) => match d.to_f64() {
+                Some(f) => visitor.visit_f64(f),
+                None => Err(de::Error::custom("decimal out of f64 range")),
+            },
+            _ => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_f64(visitor)
+    }
+
     fn deserialize_enum<V>(
         self,
         _name: &'static str,
@@ -173,7 +196,7 @@ impl<'de> de::Deserializer<'de> for &'de Value {
     }
 
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes
+        bool i8 i16 i32 i64 u8 u16 u32 u64 char str string bytes
         byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct identifier ignored_any
     }
@@ -226,7 +249,7 @@ impl<'de> de::MapAccess<'de> for ValueMapAccess<'de> {
         let value = self
             .value
             .take()
-            .expect("next_value called without next_key");
+            .ok_or_else(|| de::Error::custom("value requested before key"))?;
         seed.deserialize(value)
     }
 }
