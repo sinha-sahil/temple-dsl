@@ -1,38 +1,62 @@
 use crate::error::{CompileError, Span};
 use crate::value::Value;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutNode {
     pub kind: OutKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OutKind {
-    Literal(Value),
+    Literal(Lit),
     Hole(Expr),
     Object(Vec<(SmolStr, OutNode)>),
     Array(Vec<OutNode>),
     Interp(Vec<InterpPart>),
 }
 
-#[derive(Debug, Clone)]
+/// A scalar literal, kept distinct from `Value` so the serialized AST doesn't force
+/// `Value: Deserialize` — which is what makes `render::<Value>` a compile error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Lit {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Decimal(Decimal),
+    Str(SmolStr),
+}
+
+impl Lit {
+    pub fn to_value(&self) -> Value {
+        match self {
+            Lit::Null => Value::Null,
+            Lit::Bool(b) => Value::Bool(*b),
+            Lit::Int(n) => Value::Int(*n),
+            Lit::Decimal(d) => Value::Decimal(*d),
+            Lit::Str(s) => Value::Str(s.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InterpPart {
     Text(SmolStr),
     Hole(Expr),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExprKind {
-    Literal(Value),
+    Literal(Lit),
     Path {
         root: SmolStr,
         root_span: Span,
@@ -69,7 +93,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
     Add,
     Sub,
@@ -86,25 +110,25 @@ pub enum BinOp {
     Coalesce,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnOp {
     Neg,
     Not,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhenBranch {
     pub cond: Expr,
     pub result: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LambdaParam {
     pub name: SmolStr,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PathSegment {
     Field {
         name: SmolStr,
@@ -122,13 +146,13 @@ pub enum PathSegment {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
     pub lets: Vec<LetBinding>,
     pub output: OutNode,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LetBinding {
     pub name: SmolStr,
     pub expr: Expr,
@@ -319,7 +343,7 @@ impl<'a> Parser<'a> {
             Some(b'\'') => {
                 let v = self.parse_single_quoted_string()?;
                 Ok(OutNode {
-                    kind: OutKind::Literal(Value::Str(v)),
+                    kind: OutKind::Literal(Lit::Str(v)),
                     span: Span::new(start, self.pos),
                 })
             }
@@ -483,7 +507,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Ok(OutNode {
-                kind: OutKind::Literal(Value::Str(SmolStr::new(s))),
+                kind: OutKind::Literal(Lit::Str(SmolStr::new(s))),
                 span,
             })
         }
@@ -740,14 +764,14 @@ impl<'a> Parser<'a> {
             Some(b'\'') => {
                 let s = self.parse_single_quoted_string()?;
                 Ok(Expr {
-                    kind: ExprKind::Literal(Value::Str(s)),
+                    kind: ExprKind::Literal(Lit::Str(s)),
                     span: Span::new(start, self.pos),
                 })
             }
             Some(b'"') => {
                 let s = self.parse_double_quoted_string()?;
                 Ok(Expr {
-                    kind: ExprKind::Literal(Value::Str(s)),
+                    kind: ExprKind::Literal(Lit::Str(s)),
                     span: Span::new(start, self.pos),
                 })
             }
@@ -821,15 +845,15 @@ impl<'a> Parser<'a> {
                 let ident_span = Span::new(ident_start, self.pos);
                 match ident.as_str() {
                     "true" => Ok(Expr {
-                        kind: ExprKind::Literal(Value::Bool(true)),
+                        kind: ExprKind::Literal(Lit::Bool(true)),
                         span: ident_span,
                     }),
                     "false" => Ok(Expr {
-                        kind: ExprKind::Literal(Value::Bool(false)),
+                        kind: ExprKind::Literal(Lit::Bool(false)),
                         span: ident_span,
                     }),
                     "null" => Ok(Expr {
-                        kind: ExprKind::Literal(Value::Null),
+                        kind: ExprKind::Literal(Lit::Null),
                         span: ident_span,
                     }),
                     "when" => self.parse_when_body(ident_start),
@@ -1231,7 +1255,7 @@ impl<'a> Parser<'a> {
         Ok(SmolStr::new(unescape(raw)))
     }
 
-    fn parse_number(&mut self) -> Result<Value, CompileError> {
+    fn parse_number(&mut self) -> Result<Lit, CompileError> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
             self.pos += 1;
@@ -1265,14 +1289,14 @@ impl<'a> Parser<'a> {
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         if is_decimal {
             text.parse::<Decimal>()
-                .map(Value::Decimal)
+                .map(Lit::Decimal)
                 .map_err(|e| CompileError::Syntax {
                     message: format!("invalid decimal '{text}': {e}"),
                     span: Span::new(start, self.pos),
                 })
         } else {
             text.parse::<i64>()
-                .map(Value::Int)
+                .map(Lit::Int)
                 .map_err(|e| CompileError::Syntax {
                     message: format!("invalid integer '{text}': {e}"),
                     span: Span::new(start, self.pos),
@@ -1280,14 +1304,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_keyword_value(&mut self) -> Result<Value, CompileError> {
+    fn parse_keyword_value(&mut self) -> Result<Lit, CompileError> {
         let start = self.pos;
         let ident = self.read_ident();
         let span = Span::new(start, self.pos);
         match ident.as_str() {
-            "true" => Ok(Value::Bool(true)),
-            "false" => Ok(Value::Bool(false)),
-            "null" => Ok(Value::Null),
+            "true" => Ok(Lit::Bool(true)),
+            "false" => Ok(Lit::Bool(false)),
+            "null" => Ok(Lit::Null),
             other => Err(CompileError::Syntax {
                 message: format!("unknown identifier '{other}'"),
                 span,

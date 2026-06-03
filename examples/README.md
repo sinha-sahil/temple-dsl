@@ -22,6 +22,7 @@ cargo run --example error_handling
 | [`error_handling.rs`](error_handling.rs) | `Result` from both `compile` and `render`; Temple never panics. |
 | [`payment_request.rs`](payment_request.rs) | Big realistic payload — ~30 fields, four levels of nesting, fixed-shape items array. |
 | [`normalize_response.rs`](normalize_response.rs) | Reshape a verbose external API response into a clean canonical struct. |
+| [`compiled_blob.rs`](compiled_blob.rs) | The persistence lifecycle — `compile` → `to_bytes` → reload with `from_bytes` (no reparse) → render. |
 
 For executing a `.temple` file directly against a JSON input file, use the
 optional `temple` binary (feature-gated, so the library stays lean for
@@ -39,6 +40,8 @@ temple hello.temple input.json
 The binary lands in `~/.cargo/bin/temple`. Uninstall with
 `cargo uninstall temple-dsl`.
 
-> These exercise the **MVP** slice of Temple. Operators, conditionals, methods,
-> and the rest of the language land in later milestones — see
-> [`../IMPLEMENTATION.md`](../IMPLEMENTATION.md) for the build order.
+## End-to-end (database) tests
+
+The library has no database dependency by design. The full Postgres
+round-trip harness lives outside the crate in [`../e2e/`](../e2e/) — lift it
+into a standalone package to run it. See [`../e2e/README.md`](../e2e/README.md).

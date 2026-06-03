@@ -134,6 +134,66 @@ fn f64_from_decimal_field_works() {
     assert!((o.x - 2.5).abs() < 1e-12);
 }
 
+/// Build an N-deep nested-array value iteratively (construction never recurses).
+fn deep_value(levels: usize) -> Value {
+    let mut v = Value::Int(0);
+    for _ in 0..levels {
+        v = Value::Arr(vec![v]);
+    }
+    v
+}
+
+#[test]
+fn deep_input_passthrough_is_error_not_abort() {
+    let t = Template::compile("{{ input.a }}").unwrap();
+    let input = Value::obj([("a", deep_value(5000))]);
+    assert!(matches!(
+        t.render_value(input),
+        Err(RenderError::ValueTooDeep { .. })
+    ));
+}
+
+#[test]
+fn deep_input_equality_is_error_not_abort() {
+    let t = Template::compile("{{ input.a == input.b }}").unwrap();
+    let input = Value::obj([("a", deep_value(5000)), ("b", deep_value(5000))]);
+    assert!(matches!(
+        t.render_value(input),
+        Err(RenderError::ValueTooDeep { .. })
+    ));
+}
+
+#[test]
+fn fold_built_deep_value_is_error_not_abort() {
+    // A pathological accumulator-nesting fold over a long array would build a
+    // deep value; it must error at the depth cap, not overflow.
+    let t = Template::compile("{{ input.xs.fold([], (acc, x) -> [acc]) }}").unwrap();
+    let input = Value::obj([("xs", Value::Arr((0..5000).map(Value::Int).collect()))]);
+    assert!(matches!(
+        t.render_value(input),
+        Err(RenderError::ValueTooDeep { .. })
+    ));
+}
+
+#[test]
+fn dropping_a_deeply_nested_value_does_not_overflow() {
+    // The derived recursive Drop would SIGABRT here; the iterative Drop must not.
+    let v = deep_value(300_000);
+    drop(v);
+}
+
+#[test]
+fn moderate_nesting_still_renders() {
+    let t = Template::compile("{{ input.a }}").unwrap();
+    // Well under the cap — must render fine, and a huge *passive* sibling must
+    // not be walked (only the accessed value is depth-checked).
+    let input = Value::obj([
+        ("a", deep_value(50)),
+        ("big", Value::Arr((0..100_000).map(Value::Int).collect())),
+    ]);
+    assert!(t.render_value(input).is_ok());
+}
+
 #[test]
 fn decimal_field_still_exact() {
     let out: Decimal = Template::compile("{{ input.v }}")

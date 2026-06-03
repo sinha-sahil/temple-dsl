@@ -1,3 +1,6 @@
+//! Built-in functions — `abs`/`round`/`floor`/`ceil`/`min`/`max`/`upper`/
+//! `lower`/`trim`/`to_string`/`len`, plus arity and type errors.
+
 use rust_decimal::Decimal;
 use temple_dsl::{RenderError, Template, Value};
 
