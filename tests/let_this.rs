@@ -1,3 +1,6 @@
+//! `let` bindings and `this` self-reference, ordered by a compile-time DAG
+//! (cycle-checked).
+
 use serde::Deserialize;
 use temple_dsl::{Template, Value};
 

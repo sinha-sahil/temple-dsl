@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
@@ -68,6 +69,10 @@ pub enum RenderError {
         span: Span,
     },
     LambdaExpected {
+        span: Span,
+    },
+    ValueTooDeep {
+        limit: usize,
         span: Span,
     },
     Deserialize(String),
@@ -143,6 +148,9 @@ impl fmt::Display for RenderError {
             }
             RenderError::NotIndexable { got, .. } => write!(f, "cannot index into {got}"),
             RenderError::LambdaExpected { .. } => write!(f, "expected a lambda"),
+            RenderError::ValueTooDeep { limit, .. } => {
+                write!(f, "value nests deeper than the limit of {limit} levels")
+            }
             RenderError::Deserialize(msg) => write!(f, "deserialize error: {msg}"),
         }
     }

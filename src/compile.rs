@@ -1,4 +1,4 @@
-use crate::error::{CompileError, RenderError, Span};
+use crate::error::{CompileError, LoadError, RenderError, Span};
 use crate::eval::{self, Scope};
 use crate::parse::{
     self, Expr, ExprKind, InterpPart, LetBinding, Module, OutKind, OutNode, PathSegment,
@@ -15,6 +15,15 @@ const RESERVED: &[&str] = &[
 
 /// Source-size cap, rejected at compile so a pathological template never reaches render.
 const MAX_SOURCE_BYTES: usize = 1 << 20; // 1 MiB
+
+// Blob layout = signature ("TMPL") + LE version u32 + CBOR module. CBOR (not
+// bincode) because rust_decimal decodes via deserialize_any, which
+// non-self-describing formats reject.
+const BLOB_SIGNATURE: [u8; 4] = *b"TMPL";
+const BLOB_VERSION: u32 = 1;
+// The CBOR AST expands ~10x over source, so the load cap must clear that worst
+// case — otherwise a compilable template could produce a blob `from_bytes` rejects.
+const MAX_BLOB_BYTES: usize = MAX_SOURCE_BYTES * 16;
 
 #[derive(Debug, Clone)]
 pub struct Template {
@@ -45,25 +54,80 @@ impl Template {
         Self::compile(src).map(|_| ())
     }
 
+    /// Serialize the compiled template to a versioned blob for storage. The
+    /// render path reloads it with [`from_bytes`](Self::from_bytes) — no reparse.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&BLOB_SIGNATURE);
+        out.extend_from_slice(&BLOB_VERSION.to_le_bytes());
+        ciborium::ser::into_writer(&self.module, &mut out)
+            .expect("encoding a compiled module to CBOR cannot fail");
+        out
+    }
+
+    /// Load a template from a [`to_bytes`](Self::to_bytes) blob — a deserialize,
+    /// never a parse. Re-validates so a corrupt blob errors instead of risking
+    /// a render-time panic.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LoadError> {
+        if bytes.len() > MAX_BLOB_BYTES {
+            return Err(LoadError::Corrupt("blob exceeds maximum size".into()));
+        }
+        let header = bytes
+            .get(..8)
+            .ok_or_else(|| LoadError::Corrupt("blob too short".into()))?;
+        if header[..4] != BLOB_SIGNATURE {
+            return Err(LoadError::Corrupt("not a Temple blob".into()));
+        }
+        let version = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        if version != BLOB_VERSION {
+            return Err(LoadError::IncompatibleVersion {
+                found: version,
+                expected: BLOB_VERSION,
+            });
+        }
+        let module: Module = ciborium::de::from_reader(&bytes[8..])
+            .map_err(|e| LoadError::Corrupt(format!("malformed blob: {e}")))?;
+        let output_order = resolve(&module).map_err(|errs| {
+            LoadError::Corrupt(format!("blob failed validation ({} error(s))", errs.len()))
+        })?;
+        Ok(Template {
+            module,
+            output_order,
+        })
+    }
+
+    /// Render into one of the caller's own types `T`. To get the dynamic
+    /// [`Value`] back instead, use [`render_value`](Self::render_value) —
+    /// `render::<Value>` does not compile, by design (`Value` is not a
+    /// deserialize target).
     pub fn render<T>(&self, input: impl Into<Value>) -> Result<T, RenderError>
     where
         T: DeserializeOwned,
     {
-        let input = input.into();
+        let output_value = self.eval_output(&input.into())?;
+        T::deserialize(&output_value).map_err(|e| RenderError::Deserialize(e.to_string()))
+    }
+
+    /// Render to the dynamic [`Value`] directly, skipping the serde round-trip.
+    pub fn render_value(&self, input: impl Into<Value>) -> Result<Value, RenderError> {
+        self.eval_output(&input.into())
+    }
+
+    fn eval_output(&self, input: &Value) -> Result<Value, RenderError> {
         let empty_this: Scope = HashMap::new();
 
         let mut lets: Scope = HashMap::with_capacity(self.module.lets.len());
         for binding in &self.module.lets {
-            let v = eval::evaluate_expr(&binding.expr, &input, &lets, &empty_this)?;
+            let v = eval::evaluate_expr(&binding.expr, input, &lets, &empty_this)?;
             lets.insert(binding.name.clone(), v);
         }
 
-        let output_value = match &self.module.output.kind {
+        match &self.module.output.kind {
             OutKind::Object(fields) => {
                 let mut this: Scope = HashMap::with_capacity(fields.len());
                 for &idx in &self.output_order {
                     let (key, node) = &fields[idx];
-                    let v = eval::evaluate(node, &input, &lets, &this)?;
+                    let v = eval::evaluate(node, input, &lets, &this)?;
                     this.insert(key.clone(), v);
                 }
                 let mut result = IndexMap::with_capacity(fields.len());
@@ -72,12 +136,10 @@ impl Template {
                         result.insert(key.clone(), v);
                     }
                 }
-                Value::Obj(result)
+                Ok(Value::Obj(result))
             }
-            _ => eval::evaluate(&self.module.output, &input, &lets, &empty_this)?,
-        };
-
-        T::deserialize(&output_value).map_err(|e| RenderError::Deserialize(e.to_string()))
+            _ => eval::evaluate(&self.module.output, input, &lets, &empty_this),
+        }
     }
 }
 

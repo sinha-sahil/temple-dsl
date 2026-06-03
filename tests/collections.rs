@@ -1,3 +1,6 @@
+//! Collection methods (`map`/`filter`/`fold`/`first`/`last`/`concat`/…),
+//! lambdas, and `arr[i]` indexing.
+
 use rust_decimal::Decimal;
 use temple_dsl::{RenderError, Template, Value};
 

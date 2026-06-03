@@ -16,9 +16,10 @@ cli = ["dep:serde_json"]
 
 [dependencies]
 rust_decimal = { version = "1", features = ["serde"] }
-smol_str = "0.2"
+smol_str = { version = "0.2", features = ["serde"] }
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
 serde_json = { version = "1", features = [
     "preserve_order",
     "arbitrary_precision",
@@ -26,6 +27,9 @@ serde_json = { version = "1", features = [
 
 [dev-dependencies]
 criterion = "0.5"
+cargo-husky = { version = "1", default-features = false, features = [
+    "user-hooks",
+] }
 
 [[bin]]
 name = "temple"

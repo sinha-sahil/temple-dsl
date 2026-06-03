@@ -1,8 +1,12 @@
 # Temple — Design
 
-> **Status: design stage.** This is the source of truth for Temple's design; it
-> runs ahead of the implementation. Everything here is settled unless flagged
-> under [§10 Open question](#10-open-question).
+> [!NOTE]
+> **The design — now largely realized.** This is the source of truth for what
+> Temple *is*; milestones 1–7 of 8 implement it. See
+> [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the as-built map and
+> [`README.md`](README.md) for status. Everything here is settled unless flagged
+> under [§10 Open question](#10-open-question); the few still-aspirational pieces
+> (`format`, source-underlined diagnostics) are marked inline.
 
 ## Contents
 
@@ -257,10 +261,11 @@ collection methods, not loops. What this costs a render is covered in
 
 ### Functions
 
-Functions are called as `name(arg, …)` — a small built-in set of scalar helpers
-(`round`, `upper`, `lower`, … — final set TBD), pure and dispatched through an
-enum rather than a string-keyed map. (Operations *on a collection* are methods,
-above; scalar helpers are functions.)
+Functions are called as `name(arg, …)` — a fixed set of pure scalar helpers:
+`abs`, `round`, `floor`, `ceil`, `min`, `max`, `upper`, `lower`, `trim`,
+`to_string`, `len`. They are dispatched by matching the name, not through a
+string-keyed map. (Operations *on a collection* are methods, above; scalar
+helpers are functions.)
 
 ### Literals & constructors
 
@@ -430,14 +435,19 @@ operation budget can cap total work where a hard ceiling is wanted.
 // Author-time (called by your save handler or template editor)
 Template::compile(src: &str)  -> Result<Template, Vec<CompileError>>
 Template::validate(src: &str) -> Result<(), Vec<CompileError>>      // same checks, no Template kept
-Template::format(src: &str)   -> Result<String, Vec<CompileError>>  // parse + emit canonical layout
+Template::format(src: &str)   -> Result<String, Vec<CompileError>>  // canonical layout — milestone 8, not yet implemented
 Template::to_bytes(&self)     -> Vec<u8>
 
 // Render time (hot path)
 Template::from_bytes(bytes: &[u8]) -> Result<Template, LoadError>
 Template::render<T: DeserializeOwned>(&self, input: impl Into<Value>)
-    -> Result<T, RenderError>
+    -> Result<T, RenderError>                                      // into your own type
+Template::render_value(&self, input: impl Into<Value>)
+    -> Result<Value, RenderError>                                  // the dynamic Value, no serde round-trip
 ```
+
+`render::<Value>` is intentionally a compile error — `Value` is not a deserialize
+target. Use `render_value` to get the dynamic value back.
 
 `validate` and `format` are author-time helpers — call them from a save handler
 or an editor integration to give the author immediate feedback. Both reuse
@@ -451,18 +461,22 @@ enums** carrying rich context:
 
 | Error | From | Carries |
 | --- | --- | --- |
-| `CompileError` | `compile`, `validate`, `format` | syntax · cycle · unknown function · cap exceeded — each with a source span (line/column) |
+| `CompileError` | `compile`, `validate`, `format` | syntax · cycle · unknown function · cap exceeded — each with a source span |
 | `LoadError` | `from_bytes` | corrupt or version-incompatible blob |
-| `RenderError` | `render` | missing path · type mismatch · function failure · deserialize failure — each with the output key under evaluation and the offending sub-expression's span |
+| `RenderError` | `render` | missing path · type mismatch · function failure · arithmetic overflow · divide by zero · value-too-deep · deserialize failure — each with the offending sub-expression's span |
 
-`compile` / `validate` / `format` report **all** problems found in one pass
-(hence `Vec<CompileError>`) — the author fixes everything in one save. `render`
-fails fast on the first error (it's the hot path).
+`compile` / `validate` return `Vec<CompileError>` so the author fixes everything
+in one save. Today the **resolver** delivers on that — it collects every
+reference, cycle, and validation error in one pass; the **parser** is still
+fail-fast on the first syntax error. `render` fails fast on the first error
+(it's the hot path).
 
-Messages quote the source, underline the offending fragment, and suggest fixes
-where the names are statically known — e.g. `this.taxs` → *did you mean
-`this.tax`?* This requires the parser to attach a source span to every AST node
-*from the start*; retrofitting spans is painful.
+*Milestone 8.* Messages will quote the source, underline the offending fragment,
+and suggest fixes where the names are statically known — e.g. `this.taxs` →
+*did you mean `this.tax`?* The groundwork is in place: a source span sits on
+every AST node from day one (retrofitting spans is painful), so today's messages
+already carry the offending byte range — they just print it as `12..15` rather
+than an underlined line/column snippet.
 
 **Temple never panics on a template or input, and never decides how a failure is
 handled.** A failure is a typed value the caller owns. `render::<T>` returns
@@ -552,28 +566,31 @@ iteration: the `map` / `filter` / `fold` collection methods
 
 | Crate | Role |
 | --- | --- |
-| `serde` · `serde_json` | input conversion · typed result deserialization |
 | `rust_decimal` | exact decimal arithmetic |
 | `smol_str` | small inline strings for keys and identifiers |
 | `indexmap` | order-preserving maps for objects |
-| `winnow` / `chumsky` | parser — choice pending |
-| `criterion` | benchmarking |
+| `serde` | AST serialize/deserialize (the blob) + typed result deserialization |
+| `ciborium` | compiled-blob format (CBOR — self-describing) |
+| `serde_json` | optional (`cli` feature) — JSON I/O for the `temple` binary |
+| `criterion` | benchmarking (dev) |
+| *(parser)* | hand-written recursive descent — no parser crate |
 
-Target size: ~2,000 lines of Rust.
+Size: ~3,400 lines of Rust (the hand-written parser is ~1,400 of them).
 
 ### Roadmap
 
-- [ ] Parser and AST — with source spans on every node
-- [ ] `Value` and the evaluator
-- [ ] Paths, operators, precedence
-- [ ] Conditionals — `when` guards and ternary
-- [ ] Collection methods — `map` / `filter` / `fold`, with lambdas
-- [ ] `let` variables and `this` — the dependency graph
-- [ ] Built-in functions
-- [ ] `compile` / `validate` / `format` — size caps, multi-error reporting, located messages
-- [ ] `to_bytes` / `from_bytes` — the compiled blob
-- [ ] `render` and serde deserialization of results
-- [ ] `criterion` benchmark suite
+- [x] Parser and AST — with source spans on every node
+- [x] `Value` and the evaluator
+- [x] Paths, operators, precedence
+- [x] Conditionals — `when` guards and ternary
+- [x] Collection methods — `map` / `filter` / `fold`, with lambdas
+- [x] `let` variables and `this` — the dependency graph
+- [x] Built-in functions
+- [x] `compile` / `validate` — size/depth caps, resolver multi-error reporting
+- [x] `to_bytes` / `from_bytes` — the compiled blob
+- [x] `render` and serde deserialization of results
+- [x] `criterion` benchmark suite
+- [ ] `format` + source-underlined diagnostics (line/column, did-you-mean) — milestone 8
 
 ### The name
 

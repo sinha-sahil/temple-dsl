@@ -5,6 +5,9 @@ use serde::de::{self, IntoDeserializer, Visitor};
 use smol_str::SmolStr;
 use std::collections::HashMap;
 
+// `Value` is intentionally NOT `Serialize`/`Deserialize`: the serialized AST uses
+// the scalar `Lit` type for literals, so `Value` stays out of `DeserializeOwned`
+// — which makes `render::<Value>` a compile error (use `render_value` instead).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -14,6 +17,26 @@ pub enum Value {
     Str(SmolStr),
     Arr(Vec<Value>),
     Obj(IndexMap<SmolStr, Value>),
+}
+
+// Iterative drop — the derived recursive Drop overflows the stack on deep values.
+// Children move to a heap worklist; each container then drops shallow.
+impl Drop for Value {
+    fn drop(&mut self) {
+        let mut stack: Vec<Value> = Vec::new();
+        match self {
+            Value::Arr(a) => stack.append(a),
+            Value::Obj(o) => stack.extend(std::mem::take(o).into_values()),
+            _ => return,
+        }
+        while let Some(mut v) = stack.pop() {
+            match &mut v {
+                Value::Arr(a) => stack.append(a),
+                Value::Obj(o) => stack.extend(std::mem::take(o).into_values()),
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Value {
