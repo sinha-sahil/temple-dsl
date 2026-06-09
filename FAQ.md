@@ -201,3 +201,146 @@ For `{{ input.cart.items.map(it -> it.qty * it.price).fold(0, (a, b) -> a + b) }
 
 No reflection, no string lookups, no type erasure. Everything is a `match` on
 small enums plus array indexing.
+
+---
+
+## Why does Temple have its own `Value` instead of `serde_json::Value`?
+
+Because of **one variant**. Both enums are "data in memory", but they disagree
+on what a number is:
+
+```text
+serde_json::Value                     temple_dsl::Value
+─────────────────                     ─────────────────
+Null                                  Null
+Bool(bool)                            Bool(bool)
+Number(Number)  ◄── ONE number slot   Int(i64)          ◄── TWO number slots
+                    (i64 | u64 | f64) Decimal(Decimal)  ◄──
+String(String)                        Str(SmolStr)
+Array(Vec)                            Arr(Vec)
+Object(Map)                           Obj(IndexMap)
+```
+
+In `serde_json`, any number with a decimal point becomes an `f64` — a *binary*
+float that physically cannot store most decimal fractions:
+
+```text
+0.1 + 0.2            == 0.30000000000000004      ← visibly wrong
+129.99 is stored as     129.99000000000000909495 ← prints as "129.99", but it's lying
+```
+
+The second line is the dangerous one: the error is usually invisible (printing
+rounds it away) and surfaces randomly — a total off by a cent, a `==` that
+fails. Temple's contract is *exact decimals*, so its `Value` keeps integers in
+`Int` and fractional numbers in `Decimal` — and has **no f64 variant at all**.
+The wrong type doesn't exist, so the mistake can't be made.
+
+Owning the type also bought three things a borrowed type couldn't:
+
+| | Why it needs our own type |
+| --- | --- |
+| **Ordered keys** | `Obj` is an `IndexMap` — output keys always come out in template order |
+| **`render::<Value>` is a compile error** | `Value` deliberately doesn't implement `Deserialize` (see below) |
+| **Stack-safe drop** | `Value` has an iterative `Drop`, so even a pathologically deep value can't overflow the stack — part of the no-panic guarantee |
+
+---
+
+## How does `Decimal` stay exact end to end?
+
+`rust_decimal::Decimal` stores **base-10 digits** — an integer mantissa plus a
+"where's the decimal point" scale — so decimal math is integer math underneath:
+
+```text
+129.99  is stored as  (mantissa: 12999, scale: 2)  →  12999 × 10⁻²
+0.0825  is stored as  (mantissa:   825, scale: 4)  →    825 × 10⁻⁴
+multiply: 12999 × 825 = 10724175, scales add 2+4=6 →  10.724175   EXACT
+```
+
+The danger zones are the **boundaries** — anywhere data crosses in or out, an
+f64 detour could silently corrupt the digits. Every crossing is guarded:
+
+```mermaid
+sequenceDiagram
+    participant J as JSON text "129.99"
+    participant T as temple::Value
+    participant E as Evaluator
+    participant O as Your Rust struct
+
+    Note over J,T: ① INPUT boundary
+    J->>T: verbatim token "129.99" → Decimal(12999, scale 2)
+    Note right of T: never via as_f64() — text → Decimal directly
+
+    Note over T,E: ② TEMPLATE literals
+    Note right of E: `0.0825` in source is parsed by Temple's<br/>own parser straight into Decimal
+
+    Note over E: ③ MATH
+    E->>E: Decimal × Decimal = Decimal (exact, checked)
+
+    Note over E,O: ④ OUTPUT boundary (render::<T>)
+    E->>O: Decimal handed over as the digit-string "10.724175"
+    Note right of O: rust_decimal's Deserialize re-parses the<br/>exact digits into YOUR Decimal field
+```
+
+1. **Input** — library callers build `Value::Decimal` directly (this is why
+   `render` takes `impl Into<Value>`, not `impl Serialize`: a generic
+   `Serialize` would let a struct's `f64` field sneak corrupted digits in).
+   JSON input converts via the `json` feature's `From<serde_json::Value>`,
+   which parses the **verbatim number token** into `Decimal` — never `as_f64()`.
+2. **Template literals** — `0.0825` in template source never touches serde;
+   Temple's parser reads the characters into a `Decimal`.
+3. **Math** — decimal-to-decimal with checked arithmetic; `Int` mixed with
+   `Decimal` promotes to `Decimal`. No float ever appears mid-evaluation.
+4. **Output** — serde's number vocabulary is i64/u64/f64, so handing a
+   `Decimal` over *as a number* would force the f64 detour at the last step.
+   Instead the custom `Deserializer` emits it as a **string of exact digits**;
+   `rust_decimal`'s own `Deserialize` re-parses them losslessly into your
+   struct's `Decimal` field. (An `f64` struct field still works — that's an
+   explicit opt-in where *you* chose the approximation.) Converting to
+   `serde_json::Value` via the `json` feature emits a real JSON **number
+   token** with the exact digits, courtesy of `arbitrary_precision`.
+
+---
+
+## Why is `render::<Value>` a compile error?
+
+Deserializing a `Value` into a `Value` would be a pointless full copy through
+serde. Because Temple owns the type, the trap became a compile error: `Value`
+simply doesn't implement `Deserialize`.
+
+```rust
+template.render::<Receipt>(input)            // ✓ typed output
+template.render::<serde_json::Value>(input)  // ✓ JSON output
+template.render::<temple_dsl::Value>(input)  // ✗ does not compile
+template.render_value(input)                 // ✓ the direct way — no serde round-trip
+```
+
+Internally this is why the AST stores literals as a separate `Lit` type rather
+than `Value`: the serialized blob needs `Deserialize` on everything it
+contains, and keeping `Value` out of the AST keeps it out of `Deserialize`.
+
+---
+
+## How do I use `serde_json::Value` with Temple?
+
+Enable the `json` feature and the conversions are built in, exact in both
+directions:
+
+```toml
+temple-dsl = { git = "…", branch = "release", features = ["json"] }
+```
+
+```rust
+// IN: serde_json::Value goes straight into render (via From / Into<Value>)
+let input: serde_json::Value = serde_json::from_str(body)?;
+let out = template.render_value(input)?;
+
+// OUT: convert back — decimals become exact JSON number tokens
+let json = serde_json::Value::from(out);
+```
+
+The input conversion parses each number's verbatim token (`"129.99"` →
+`Decimal`, never through `f64`); the output conversion emits decimals as real
+JSON numbers with the exact digits. A number beyond `Decimal`'s range
+(≈ ±7.9 × 10²⁸) converts to `Null` rather than silently rounding. The core
+crate stays dependency-lean: `serde_json` only enters the tree when the `json`
+(or `cli`) feature is on.

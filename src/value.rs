@@ -145,6 +145,68 @@ where
     }
 }
 
+/// `serde_json::Value` goes straight into `render` (via `impl Into<Value>`).
+///
+/// Numbers convert from their **verbatim token** — `"129.99"` parses directly
+/// into an exact `Decimal`, never through `f64` (the `json` feature turns on
+/// serde_json's `arbitrary_precision` for exactly this). A number beyond
+/// `Decimal`'s range (≈ ±7.9 × 10²⁸) becomes `Null` rather than silently
+/// rounding.
+#[cfg(feature = "json")]
+impl From<serde_json::Value> for Value {
+    fn from(v: serde_json::Value) -> Value {
+        match v {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(b),
+            serde_json::Value::Number(n) => match n.as_i64() {
+                Some(i) => Value::Int(i),
+                None => n
+                    .to_string()
+                    .parse()
+                    .map(Value::Decimal)
+                    .unwrap_or(Value::Null),
+            },
+            serde_json::Value::String(s) => Value::Str(s.into()),
+            serde_json::Value::Array(a) => Value::Arr(a.into_iter().map(Value::from).collect()),
+            serde_json::Value::Object(o) => Value::Obj(
+                o.into_iter()
+                    .map(|(k, v)| (SmolStr::new(&k), Value::from(v)))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+/// The way back out: `Decimal`s become real JSON **number tokens** carrying
+/// their exact digits (via `arbitrary_precision`), not strings and not `f64`.
+#[cfg(feature = "json")]
+impl From<Value> for serde_json::Value {
+    fn from(mut v: Value) -> serde_json::Value {
+        // Children are drained via &mut — `Value` implements `Drop`, so fields
+        // can't be moved out of a by-value match.
+        match &mut v {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Int(n) => serde_json::Value::from(*n),
+            Value::Decimal(d) => d
+                .to_string()
+                .parse::<serde_json::Number>()
+                .map(serde_json::Value::Number)
+                .unwrap_or_else(|_| serde_json::Value::String(d.to_string())),
+            Value::Str(s) => serde_json::Value::String(std::mem::take(s).into()),
+            Value::Arr(a) => {
+                serde_json::Value::Array(std::mem::take(a).into_iter().map(Into::into).collect())
+            }
+            Value::Obj(o) => serde_json::Value::Object(
+                std::mem::take(o)
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.into()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 impl<'de> de::Deserializer<'de> for &'de Value {
     type Error = de::value::Error;
 

@@ -44,7 +44,7 @@ fn round_trip_full_language() {
     let src = r#"
         let items = input.items
         {
-            "summary":  "{{ input.customer }} x {{ items.length() }}",
+            "summary":  "{{ input.customer }} x {{ items.len() }}",
             "lines":    {{ items.map(it -> { "n": it.name, "t": it.qty * it.price }) }},
             "subtotal": {{ items.map(it -> it.qty * it.price).sum() }},
             "free":     {{ this.subtotal >= 50 }}

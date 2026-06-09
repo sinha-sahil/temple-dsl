@@ -154,21 +154,19 @@ fn to_string_string_passthrough() {
 }
 
 #[test]
-fn len_string() {
-    let out: i64 = render(r#"{{ len("hello") }}"#, Value::Null);
+fn len_is_a_method_not_a_function() {
+    // One spelling: `.len()`. The function form does not exist.
+    let out: i64 = render(r#"{{ "hello".len() }}"#, Value::Null);
     assert_eq!(out, 5);
-}
-
-#[test]
-fn len_array() {
     let out: i64 = render(
-        "{{ len(input.xs) }}",
+        "{{ input.xs.len() }}",
         Value::obj([(
             "xs",
             Value::Arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         )]),
     );
     assert_eq!(out, 3);
+    assert!(Template::compile("{{ len(input.xs) }}").is_err());
 }
 
 #[test]

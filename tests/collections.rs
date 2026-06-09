@@ -16,7 +16,7 @@ fn arr(xs: &[i64]) -> Value {
 #[test]
 fn array_length() {
     let out: i64 = render(
-        "{{ input.xs.length() }}",
+        "{{ input.xs.len() }}",
         Value::obj([("xs", arr(&[1, 2, 3, 4]))]),
     );
     assert_eq!(out, 4);
@@ -25,7 +25,7 @@ fn array_length() {
 #[test]
 fn string_length() {
     let out: i64 = render(
-        r#"{{ input.name.length() }}"#,
+        r#"{{ input.name.len() }}"#,
         Value::obj([("name", Value::Str("hello".into()))]),
     );
     assert_eq!(out, 5);
@@ -253,7 +253,7 @@ fn complex_output_with_methods_and_this() {
     let src = r#"
         let prices = input.line_items.map(item -> item.price)
         {
-            "count":    {{ input.line_items.length() }},
+            "count":    {{ input.line_items.len() }},
             "total":    {{ prices.fold(0, (acc, p) -> acc + p) }},
             "doubled":  {{ this.total * 2 }},
             "first":    {{ input.line_items.first().name }}

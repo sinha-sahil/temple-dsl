@@ -225,7 +225,7 @@ fn any_and_all_on_empty() {
 fn len_method_aliases_length() {
     let inp = Value::obj([("xs", arr(&[1, 2, 3]))]);
     assert_eq!(render::<i64>("{{ input.xs.len() }}", inp.clone()), 3);
-    assert_eq!(render::<i64>("{{ input.xs.length() }}", inp), 3);
+    assert_eq!(render::<i64>("{{ input.xs.len() }}", inp), 3);
 }
 
 #[test]

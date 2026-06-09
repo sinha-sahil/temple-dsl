@@ -1,6 +1,6 @@
 let items = input.items
 {
-    "summary":  "{{ input.customer }} ordered {{ items.length() }} item(s)",
+    "summary":  "{{ input.customer }} ordered {{ items.len() }} item(s)",
     "lines":    {{ items.map(it -> { "name": it.name, "total": it.qty * it.price }) }},
     "subtotal": {{ items.map(it -> it.qty * it.price).sum() }},
     "any_bulk": {{ items.any(it -> it.qty >= 5) }},

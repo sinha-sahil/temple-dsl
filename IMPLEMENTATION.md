@@ -1,17 +1,19 @@
 # Temple — Implementation
 
 > [!NOTE]
-> **As-built — milestones 1–7 of 8 done.** This documents what actually
+> **As-built — milestones 1–8 of 9 done.** This documents what actually
 > exists in `src/`; the forward-looking design lives in [`DESIGN.md`](DESIGN.md).
-> The one open milestone (8) is diagnostics polish — see [Build order](#build-order).
+> The one open milestone (9) is the web editor component — see
+> [`M9-EDITOR.md`](M9-EDITOR.md) and [Build order](#build-order).
 
 ## TL;DR
 
-Hand-written recursive-descent parser → boxed-tree AST with a `Span` on every
-node → resolver builds the `this`-dependency DAG and topo-sorts the output keys
-→ tree-walking evaluator → versioned CBOR blob. ~3.4k LoC across `lib.rs` + five
-implementation areas (`parse`, `compile`, `eval/`, `value`, `error`) + a
-feature-gated CLI.
+Hand-written recursive-descent parser (with error recovery) → boxed-tree AST
+with a `Span` on every node → resolver builds the `this`-dependency DAG and
+topo-sorts the output keys → tree-walking evaluator → versioned CBOR blob, plus a
+canonical formatter and underlined-snippet diagnostics. ~4.9k LoC across `lib.rs`
++ six implementation areas (`parse`, `compile`, `eval/`, `value`, `error`,
+`format`) + a feature-gated CLI.
 
 ---
 
@@ -24,7 +26,7 @@ feature-gated CLI.
 | `indexmap` | order-preserving maps for object values |
 | `serde` | AST `Serialize`/`Deserialize` (the blob) + the result deserialize boundary |
 | `ciborium` | compiled-blob format (CBOR — self-describing, which `rust_decimal`'s `deserialize_any` requires and bincode can't give) |
-| `serde_json` | **optional** (`cli` feature only) — JSON I/O for the `temple` binary |
+| `serde_json` | **optional** (`json` / `cli` features) — exact `From` conversions to/from `serde_json::Value`, JSON I/O for the `temple` binary |
 | `criterion` | benchmarks (dev) |
 | `cargo-husky` | git hooks — `fmt` + `clippy` pre-commit (dev) |
 
@@ -36,30 +38,29 @@ and error messages, and one fewer dependency. Diagnostics are rolled in
 
 ## File layout
 
-Five implementation areas + a `lib.rs` facade + the CLI. ~3.4k LoC — past the
-early ~2k estimate, mostly because the hand-written parser alone is ~1.4k.
+Six implementation areas + a `lib.rs` facade + the CLI. ~5.1k LoC — past the
+early ~2k estimate, mostly the hand-written parser (~1.8k) and the method stdlib.
 
 | File | LoC | Role |
 | --- | ---: | --- |
-| `lib.rs` | 9 | public surface — re-exports `Template`, the error enums, `Value` |
+| `lib.rs` | 10 | public surface — re-exports `Template`, the error enums, `Value` |
 | `value.rs` | 278 | the `Value` enum, `From`/`Into` conversions, a custom `serde::Deserializer` over `&Value`, and an iterative `Drop` |
-| `error.rs` | 175 | `CompileError` / `RenderError` / `LoadError`, `Span`, `Display` impls |
-| `parse.rs` | 1373 | AST node types (serde-derived), hand-written lexer + recursive-descent parser, spans on every node, depth cap |
-| `compile.rs` | 518 | `resolve` (let / this), `this`-DAG + cycle check, size/depth caps, `Template`, `to_bytes` / `from_bytes` (CBOR), `validate`, `render` / `render_value` |
-| `eval/` | 919 | the tree-walking evaluator, split by domain ↓ |
-| `main.rs` | 90 | feature-gated `temple` CLI binary (`.temple` + JSON in → rendered JSON out) |
+| `error.rs` | 277 | `CompileError` / `RenderError` / `LoadError`, `Span` (+ `line_col`), `Display`, and underlined-snippet `report` rendering |
+| `parse.rs` | 1790 | AST node types (serde-derived), hand-written recursive-descent parser, spans, depth cap, comma-or-newline separators, error recovery, postfix access, `let … in …` |
+| `compile.rs` | 682 | `resolve` (let / this), `this`-DAG + cycle check, caps, did-you-mean, `Template`, `to_bytes` / `from_bytes`, `validate`, `format`, `render` / `render_value` |
+| `eval/` | 1700 | the tree-walking evaluator, split by domain ↓ |
+| `format.rs` | 284 | canonical, idempotent pretty-printer over the AST |
+| `main.rs` | 120 | feature-gated `temple` CLI — `render` and the `fmt` subcommand |
 
 The evaluator was one large file; it is now a module split by concern:
 
 | `eval/` file | LoC | Role |
 | --- | ---: | --- |
-| `mod.rs` | 136 | dispatch root — `evaluate` (output nodes), `evaluate_expr` (expressions), the shared `Scope` |
-| `ops.rs` | 193 | binary/unary operators — arithmetic, comparison, equality, logical |
-| `path.rs` | 208 | path traversal over a borrow cursor, array indexing, the value-depth guard |
-| `methods.rs` | 180 | collection methods (`map`/`filter`/`fold`/…) and the lambda binding |
-| `functions.rs` | 202 | built-in functions (`abs`/`round`/`min`/…) + scalar stringification |
-
-> `format.rs` (canonical pretty-printer) is **not yet built** — it lands in milestone 8.
+| `mod.rs` | 232 | dispatch root — `evaluate` / `evaluate_expr`, the `Scope` map, and the layered `Scopes` view (a `let … in …` adds an O(1) overlay, never a scope clone) |
+| `ops.rs` | 225 | binary/unary operators — arithmetic (`+ - * / %`), comparison, equality, logical |
+| `path.rs` | 262 | path/postfix traversal over a borrow cursor, array + object indexing, the value-depth guard |
+| `methods.rs` | 571 | the method stdlib, split per receiver (`str_method` / `arr_method` / `obj_method`) + the lambda binding |
+| `functions.rs` | 410 | built-in functions, the `BUILTINS` list, `fold_compare` (shared by `min`/`max` fn + method), encodings, scalar stringification |
 
 ---
 
@@ -103,11 +104,12 @@ sequenceDiagram
 
 **Phase → file**
 
-- `parse` (lex + recursive descent + spans) → `parse.rs`
-- `resolve · this-DAG · caps · to_bytes/from_bytes · validate · render` → `compile.rs`
+- `parse` (recursive descent + spans + recovery) → `parse.rs`
+- `resolve · this-DAG · caps · did-you-mean · to_bytes/from_bytes · validate · format · render` → `compile.rs`
 - `evaluate output nodes & expressions, methods, functions` → `eval/`
-- error types + `Display` rendering, shared across phases → `error.rs`
+- error types + `Display` + underlined-snippet `report` rendering → `error.rs`
 - `Value`, conversions, the `&Value` deserializer → `value.rs`
+- canonical pretty-printer over the AST → `format.rs`
 
 ---
 
@@ -144,6 +146,13 @@ sequenceDiagram
   `rust_decimal` decodes through `deserialize_any`, which non-self-describing
   formats like bincode reject.
 - **`Template` is immutable + `Send + Sync`** — the caller shares it behind `Arc<Template>`.
+- **Canonical formatter + recovering parser** — `format` re-emits a parsed module
+  deterministically: structure laid out multiline, expressions inline and
+  parenthesized exactly enough to preserve the parse tree (idempotent, and it
+  re-parses identically). The parser recovers at object-field / array-item
+  boundaries so one compile surfaces every independent syntax error, and
+  `CompileError::report(src)` renders an underlined line/column snippet with a
+  did-you-mean hint when a name is a near-miss.
 
 ---
 
@@ -156,21 +165,27 @@ sequenceDiagram
 5. ✅ **Collections** — object/array constructor expressions, `.map` / `.filter` / `.fold` + lambdas + aggregates. Renders [`samples/collections.temple`](samples/collections.temple).
 6. ✅ **Built-ins** — scalar helpers, name-dispatched.
 7. ✅ **Serialization + caps** — `to_bytes` / `from_bytes`, signature + version tag, size/depth limits at compile.
-8. 🟡 **Polish** *(in progress)* — `format` (canonical pretty-printer), and source-underlined diagnostics with line/column + did-you-mean.
+8. ✅ **Polish** — `format` (idempotent canonical pretty-printer), parser error recovery, and `CompileError::report` underlined line/column diagnostics with did-you-mean.
+9. 🟡 **Web editor** — a WASM-backed browser component: intellisense, inline diagnostics + warnings, format-on-save. See [`M9-EDITOR.md`](M9-EDITOR.md).
 
-> **What multi-error already does:** the **resolver** collects every reference,
-> cycle, and validation problem into one `Vec<CompileError>` per `compile`. Still
-> milestone-8 work: the **parser** is fail-fast on the first syntax error, and
-> messages print byte-offset spans (`at 12..15`) rather than line/column with an
-> underlined source snippet.
+> **How multi-error works:** the **resolver** collects every reference, cycle, and
+> validation problem in one pass; the **parser** recovers at object-field and
+> array-item boundaries (sub-expressions stay fail-fast), so independent syntax
+> errors are reported together too. `CompileError::report(src)` renders each as a
+> line/column underlined snippet, while `Display` keeps the terse byte-offset form.
 
 ---
 
 ## Tests & benchmarks
 
-196 tests across feature-named integration files in [`tests/`](tests/) —
+267 tests across feature-named integration files in [`tests/`](tests/) —
 `basics`, `operators`, `safe_access`, `let_this`, `collections`, `functions`,
-`constructors`, `blob`, `render_value`, and `robustness` (the no-panic guard:
-caps, overflow, deep-value, UTF-8 spans). Criterion benches live in
+`constructors`, `blob`, `render_value`, `json_interop` (the `json` feature's
+exact two-way conversions), `diagnostics` (format idempotency,
+snippets, did-you-mean, recovery), `stdlib` (the `%` operator, new builtins,
+string/array/object methods), `structural` (omission, computed keys, object
+indexing, `let … in …`, postfix chains), `pipeline` (full lifecycle into a
+typed struct, blob round-trip, no-panic sweep), and `robustness` (the no-panic
+guard: caps, overflow, deep-value, UTF-8 spans). Criterion benches live in
 [`benches/render_bench.rs`](benches/render_bench.rs); the out-of-crate Postgres
 round-trip harness is in [`e2e/`](e2e/).

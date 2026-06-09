@@ -14,9 +14,18 @@ pub struct OutNode {
 pub enum OutKind {
     Literal(Lit),
     Hole(Expr),
-    Object(Vec<(SmolStr, OutNode)>),
+    Object(Vec<ObjField>),
     Array(Vec<OutNode>),
     Interp(Vec<InterpPart>),
+}
+
+/// One key/value entry of an output object. `optional` (`"key"?:`) drops the
+/// key from the rendered object when its value is null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjField {
+    pub key: SmolStr,
+    pub value: OutNode,
+    pub optional: bool,
 }
 
 /// A scalar literal, kept distinct from `Value` so the serialized AST doesn't force
@@ -84,13 +93,41 @@ pub enum ExprKind {
         params: Vec<LambdaParam>,
         body: Box<Expr>,
     },
+    Let {
+        name: SmolStr,
+        name_span: Span,
+        value: Box<Expr>,
+        body: Box<Expr>,
+    },
     ArrayLit(Vec<Expr>),
-    ObjectLit(Vec<(SmolStr, Expr)>),
+    ObjectLit(Vec<ObjEntry>),
+    /// Trailing segments on a non-identifier base — `f(x).method()`, `[1,2].sort()`,
+    /// `(a + b).foo`. Identifier-rooted paths use `Path` instead.
+    Access {
+        base: Box<Expr>,
+        segments: Vec<PathSegment>,
+    },
     FuncCall {
         name: SmolStr,
         name_span: Span,
         args: Vec<Expr>,
     },
+}
+
+/// One entry of an expression-position object literal. The key may be a static
+/// string or a computed expression (`{ [expr]: v }`); `optional` (`"k"?:`) drops
+/// the entry when its value is null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjEntry {
+    pub key: LitKey,
+    pub value: Expr,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LitKey {
+    Static(SmolStr),
+    Computed(Expr),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +136,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Eq,
     Ne,
     Lt,
@@ -167,18 +205,27 @@ pub fn parse(src: &str) -> Result<Module, Vec<CompileError>> {
         if !p.matches_ident("let") {
             break;
         }
-        let binding = match p.parse_let_binding() {
-            Ok(b) => b,
-            Err(e) => return Err(vec![e]),
-        };
-        lets.push(binding);
+        match p.parse_let_binding() {
+            Ok(b) => lets.push(b),
+            // Lets are line-oriented; recover to the next line and keep going so
+            // a typo in one binding doesn't mask the rest.
+            Err(e) => {
+                p.errors.push(e);
+                p.skip_to_line_end();
+            }
+        }
     }
     let output = match p.parse_output() {
         Ok(n) => n,
-        Err(e) => return Err(vec![e]),
+        Err(e) => {
+            p.errors.push(e);
+            return Err(p.errors);
+        }
     };
     p.skip_ws();
-    if p.pos < p.src.len() {
+    // Only flag trailing input on an otherwise-clean parse — after recovery the
+    // leftover bytes are expected noise, not a separate error worth reporting.
+    if p.pos < p.src.len() && p.errors.is_empty() {
         return Err(vec![CompileError::Syntax {
             message: format!(
                 "expected end of input, found '{}'",
@@ -187,17 +234,32 @@ pub fn parse(src: &str) -> Result<Module, Vec<CompileError>> {
             span: p.cur_char_span(),
         }]);
     }
-    Ok(Module { lets, output })
+    if p.errors.is_empty() {
+        Ok(Module { lets, output })
+    } else {
+        Err(p.errors)
+    }
 }
 
 /// Parser nesting cap. One level can push the whole precedence chain (~11 frames),
 /// so this stays well under the stack-overflow point — don't raise it casually.
 const MAX_DEPTH: usize = 64;
 
+/// What follows a collection item: more items, or the collection closed.
+enum ItemEnd {
+    More,
+    Closed,
+}
+
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
     depth: usize,
+    /// Recovered errors. Collection parsers (object/array) push here and resync
+    /// to the next item boundary instead of aborting, so one save surfaces every
+    /// independent structural error. Sub-expression parsing stays fail-fast and
+    /// propagates to the nearest item boundary.
+    errors: Vec<CompileError>,
 }
 
 impl<'a> Parser<'a> {
@@ -206,6 +268,7 @@ impl<'a> Parser<'a> {
             src: src.as_bytes(),
             pos: 0,
             depth: 0,
+            errors: Vec::new(),
         }
     }
 
@@ -214,6 +277,22 @@ impl<'a> Parser<'a> {
             limit: MAX_DEPTH,
             span: Span::new(self.pos, self.pos),
         }
+    }
+
+    /// Run `f` one nesting level deeper, rejecting past MAX_DEPTH. The counter
+    /// unwinds on every exit path, so recursion points can't leak depth.
+    fn guarded<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(self.too_deep());
+        }
+        let r = f(self);
+        self.depth -= 1;
+        r
     }
 
     fn peek(&self) -> Option<u8> {
@@ -318,14 +397,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_output(&mut self) -> Result<OutNode, CompileError> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            self.depth -= 1;
-            return Err(self.too_deep());
-        }
-        let r = self.parse_output_inner();
-        self.depth -= 1;
-        r
+        self.guarded(Self::parse_output_inner)
     }
 
     fn parse_output_inner(&mut self) -> Result<OutNode, CompileError> {
@@ -375,62 +447,240 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self) -> Result<OutNode, CompileError> {
         let start = self.pos;
         self.expect(b'{')?;
-        self.skip_ws();
-        let mut entries: Vec<(SmolStr, OutNode)> = Vec::new();
-        if self.peek() != Some(b'}') {
-            loop {
-                self.skip_ws();
-                let key = self.parse_double_quoted_string()?;
-                self.skip_ws();
-                self.expect(b':')?;
-                self.skip_ws();
-                let value = self.parse_output()?;
-                entries.push((key, value));
-                self.skip_ws();
-                if self.peek() == Some(b',') {
-                    self.pos += 1;
-                    self.skip_ws();
-                    if self.peek() == Some(b'}') {
-                        break;
-                    }
-                    continue;
-                }
-                break;
-            }
-        }
-        self.expect(b'}')?;
+        let entries = self.parse_items(b'}', start, Self::parse_object_entry);
         Ok(OutNode {
             kind: OutKind::Object(entries),
             span: Span::new(start, self.pos),
         })
     }
 
-    fn parse_array(&mut self) -> Result<OutNode, CompileError> {
-        let start = self.pos;
-        self.expect(b'[')?;
-        self.skip_ws();
-        let mut items: Vec<OutNode> = Vec::new();
-        if self.peek() != Some(b']') {
-            loop {
-                self.skip_ws();
-                items.push(self.parse_output()?);
-                self.skip_ws();
-                if self.peek() == Some(b',') {
+    /// The shared collection loop: parse items separated by `,` or a newline
+    /// (DESIGN §2) until `closer`. On a bad item it records the error and
+    /// resyncs to the next boundary, so independent errors report together.
+    fn parse_items<T>(
+        &mut self,
+        closer: u8,
+        start: usize,
+        mut parse_item: impl FnMut(&mut Self) -> Result<T, CompileError>,
+    ) -> Vec<T> {
+        let mut items = Vec::new();
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b) if b == closer => {
                     self.pos += 1;
-                    self.skip_ws();
-                    if self.peek() == Some(b']') {
+                    break;
+                }
+                None => {
+                    self.unterminated(start, closer as char);
+                    break;
+                }
+                _ => {}
+            }
+            match parse_item(self) {
+                Ok(v) => items.push(v),
+                Err(e) => {
+                    self.errors.push(e);
+                    if matches!(self.recover_item(closer), ItemEnd::Closed) {
                         break;
                     }
                     continue;
                 }
+            }
+            if matches!(self.after_item(closer), ItemEnd::Closed) {
                 break;
             }
         }
-        self.expect(b']')?;
+        items
+    }
+
+    fn parse_object_entry(&mut self) -> Result<ObjField, CompileError> {
+        self.skip_ws();
+        let key = self.parse_double_quoted_string()?;
+        self.skip_ws();
+        let optional = self.peek() == Some(b'?');
+        if optional {
+            self.pos += 1;
+            self.skip_ws();
+        }
+        self.expect(b':')?;
+        self.skip_ws();
+        let value = self.parse_output()?;
+        Ok(ObjField {
+            key,
+            value,
+            optional,
+        })
+    }
+
+    fn parse_array(&mut self) -> Result<OutNode, CompileError> {
+        let start = self.pos;
+        self.expect(b'[')?;
+        let items = self.parse_items(b']', start, Self::parse_output);
         Ok(OutNode {
             kind: OutKind::Array(items),
             span: Span::new(start, self.pos),
         })
+    }
+
+    /// After a failed item, skip to the next boundary and consume it.
+    fn recover_item(&mut self, closer: u8) -> ItemEnd {
+        if self.sync_to_item_boundary() {
+            self.pos += 1; // the `,` or newline the sync stopped at
+            ItemEnd::More
+        } else {
+            if self.peek() == Some(closer) {
+                self.pos += 1;
+            }
+            ItemEnd::Closed
+        }
+    }
+
+    /// After a good item, consume its separator — a `,`, a line break
+    /// (newline-separated entries, DESIGN §2), or the closer.
+    fn after_item(&mut self, closer: u8) -> ItemEnd {
+        self.skip_ws();
+        match self.peek() {
+            Some(b',') => {
+                self.pos += 1;
+                ItemEnd::More
+            }
+            Some(b) if b == closer => {
+                self.pos += 1;
+                ItemEnd::Closed
+            }
+            None => {
+                self.errors.push(CompileError::Syntax {
+                    message: format!("expected '{}'", closer as char),
+                    span: Span::new(self.pos, self.pos),
+                });
+                ItemEnd::Closed
+            }
+            Some(_) if self.newline_behind() => ItemEnd::More,
+            Some(_) => {
+                self.errors.push(CompileError::Syntax {
+                    message: format!(
+                        "expected ',' or '{}', found '{}'",
+                        closer as char,
+                        self.peek_char().unwrap_or('?')
+                    ),
+                    span: self.cur_char_span(),
+                });
+                self.recover_item(closer)
+            }
+        }
+    }
+
+    /// Separator inside an expression-position `[…]`/`{…}` literal: a `,`
+    /// (tolerating a trailing one) or a line break. `Closed` leaves the cursor
+    /// in place for the caller's closing `expect` to consume or report.
+    fn expr_item_sep(&mut self, closer: u8) -> ItemEnd {
+        self.skip_ws();
+        if self.peek() == Some(b',') {
+            self.pos += 1;
+            self.skip_ws();
+            if self.peek() == Some(closer) {
+                return ItemEnd::Closed;
+            }
+            return ItemEnd::More;
+        }
+        if self.peek() == Some(closer) || self.peek().is_none() {
+            return ItemEnd::Closed;
+        }
+        if self.newline_behind() {
+            ItemEnd::More
+        } else {
+            ItemEnd::Closed
+        }
+    }
+
+    /// True when the last non-whitespace byte before the cursor sits on an
+    /// earlier line — entries separated by a line break instead of a comma.
+    fn newline_behind(&self) -> bool {
+        let mut i = self.pos;
+        while i > 0 {
+            let b = self.src[i - 1];
+            if b == b'\n' {
+                return true;
+            }
+            if !b.is_ascii_whitespace() {
+                return false;
+            }
+            i -= 1;
+        }
+        false
+    }
+
+    fn unterminated(&mut self, start: usize, closer: char) {
+        self.errors.push(CompileError::Syntax {
+            message: format!("unterminated, expected '{closer}'"),
+            span: Span::new(start, self.pos),
+        });
+    }
+
+    /// Skip past a malformed item to the next top-level separator (`,` or
+    /// newline) or the closing bracket/EOF, tracking nesting and strings so we
+    /// never stop inside them. Returns `true` if it stopped at a separator
+    /// (left unconsumed). Always makes forward progress.
+    fn sync_to_item_boundary(&mut self) -> bool {
+        let mut depth: i32 = 0;
+        while let Some(b) = self.peek() {
+            match b {
+                // A `{{ … }}` hole is opaque to the scan — skip it whole so its
+                // `}}` is never mistaken for this collection's closing bracket.
+                b'{' if self.peek_at(1) == Some(b'{') => {
+                    self.pos += 2;
+                    self.skip_to_hole_close();
+                }
+                b'"' | b'\'' => self.skip_string_lenient(b),
+                // Stop before the comment's newline so it counts as a boundary.
+                b'#' => {
+                    while self.peek().is_some_and(|c| c != b'\n') {
+                        self.pos += 1;
+                    }
+                }
+                b'{' | b'[' | b'(' => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                b'}' | b']' | b')' => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    self.pos += 1;
+                }
+                b',' | b'\n' if depth == 0 => return true,
+                _ => self.pos += 1,
+            }
+        }
+        false
+    }
+
+    fn skip_string_lenient(&mut self, quote: u8) {
+        self.pos += 1;
+        while let Some(b) = self.peek() {
+            if b == b'\\' {
+                self.pos += 1;
+                if self.peek().is_some() {
+                    self.pos += 1;
+                }
+            } else if b == quote {
+                self.pos += 1;
+                break;
+            } else {
+                self.pos += 1;
+            }
+        }
+    }
+
+    fn skip_to_line_end(&mut self) {
+        while let Some(b) = self.peek() {
+            self.pos += 1;
+            if b == b'\n' {
+                break;
+            }
+        }
     }
 
     /// Parse an output-position double-quoted string, splitting `{{ expr }}` holes
@@ -466,6 +716,9 @@ impl<'a> Parser<'a> {
                         Some(b'"') => buf.push(b'"'),
                         Some(b'\'') => buf.push(b'\''),
                         Some(b'\\') => buf.push(b'\\'),
+                        // `\{` = literal brace, so text can hold `{{` without
+                        // opening a hole (and the formatter can re-emit it).
+                        Some(b'{') => buf.push(b'{'),
                         Some(other) => {
                             buf.push(b'\\');
                             buf.push(other);
@@ -517,17 +770,114 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         self.expect_str("{{")?;
         self.skip_ws();
-        let expr = self.parse_expr()?;
-        self.skip_ws();
-        self.expect_str("}}")?;
-        Ok(OutNode {
-            kind: OutKind::Hole(expr),
-            span: Span::new(start, self.pos),
-        })
+        // A failed hole recovers *here* (skip to its own `}}`) rather than
+        // bubbling up — otherwise the cursor would sit before the `}}`, which a
+        // surrounding object/array would misread as its own closing bracket.
+        match self.parse_expr() {
+            Ok(expr) => {
+                self.skip_ws();
+                if let Err(e) = self.expect_str("}}") {
+                    self.errors.push(e);
+                    self.skip_to_hole_close();
+                }
+                Ok(OutNode {
+                    kind: OutKind::Hole(expr),
+                    span: Span::new(start, self.pos),
+                })
+            }
+            Err(e) => {
+                self.errors.push(e);
+                self.skip_to_hole_close();
+                let span = Span::new(start, self.pos);
+                Ok(OutNode {
+                    kind: OutKind::Hole(Expr {
+                        kind: ExprKind::Literal(Lit::Null),
+                        span,
+                    }),
+                    span,
+                })
+            }
+        }
+    }
+
+    /// Scan to the hole's closing `}}` (at bracket-depth 0), skipping strings,
+    /// comments, and any balanced brackets the expression contained. The cursor
+    /// must already be past the opening `{{`.
+    fn skip_to_hole_close(&mut self) {
+        let mut depth: i32 = 0;
+        while let Some(b) = self.peek() {
+            match b {
+                b'"' | b'\'' => self.skip_string_lenient(b),
+                b'#' => self.skip_to_line_end(),
+                b'}' if depth == 0 && self.peek_at(1) == Some(b'}') => {
+                    self.pos += 2;
+                    return;
+                }
+                b'{' | b'[' | b'(' => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                b'}' | b']' | b')' => {
+                    depth = (depth - 1).max(0);
+                    self.pos += 1;
+                }
+                _ => self.pos += 1,
+            }
+        }
     }
 
     fn parse_expr(&mut self) -> Result<Expr, CompileError> {
-        self.parse_ternary()
+        self.parse_let_in()
+    }
+
+    /// `let NAME = EXPR in EXPR` — a local binding usable anywhere an expression
+    /// is (including `when` branches). Falls through to the operator chain when
+    /// the expression doesn't start with `let`.
+    fn parse_let_in(&mut self) -> Result<Expr, CompileError> {
+        self.skip_ws();
+        if !self.matches_ident("let") {
+            return self.parse_ternary();
+        }
+        self.guarded(Self::parse_let_in_inner)
+    }
+
+    fn parse_let_in_inner(&mut self) -> Result<Expr, CompileError> {
+        let start = self.pos;
+        self.pos += "let".len();
+        self.skip_ws();
+        let name_start = self.pos;
+        let name = self.read_ident();
+        if name.is_empty() {
+            return Err(CompileError::Syntax {
+                message: "expected a name after 'let'".into(),
+                span: Span::new(name_start, name_start + 1),
+            });
+        }
+        let name_span = Span::new(name_start, self.pos);
+        self.skip_ws();
+        self.expect(b'=')?;
+        self.skip_ws();
+        let value = self.parse_expr()?;
+        self.skip_ws();
+        if !self.matches_ident("in") {
+            return Err(CompileError::Syntax {
+                message: "expected 'in' after the let-binding value".into(),
+                span: self.cur_char_span(),
+            });
+        }
+        self.pos += "in".len();
+        self.skip_ws();
+        let body = self.parse_expr()?;
+        let end = body.span.end as usize;
+        Ok(Expr {
+            kind: ExprKind::Let {
+                name,
+                name_span,
+                value: Box::new(value),
+                body: Box::new(body),
+            },
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_ternary(&mut self) -> Result<Expr, CompileError> {
@@ -683,6 +1033,10 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     BinOp::Div
                 }
+                Some(b'%') => {
+                    self.pos += 1;
+                    BinOp::Mod
+                }
                 _ => break,
             };
             self.skip_ws();
@@ -693,14 +1047,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, CompileError> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            self.depth -= 1;
-            return Err(self.too_deep());
-        }
-        let r = self.parse_unary_inner();
-        self.depth -= 1;
-        r
+        self.guarded(Self::parse_unary_inner)
     }
 
     fn parse_unary_inner(&mut self) -> Result<Expr, CompileError> {
@@ -749,6 +1096,29 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<Expr, CompileError> {
         self.skip_ws();
         let start = self.pos;
+        let base = self.parse_primary_inner(start)?;
+        self.with_postfix(base, start)
+    }
+
+    /// Attach trailing `.field` / `?.field` / `.method()` / `[idx]` segments to a
+    /// non-identifier base. (Identifier roots build `Path` directly, consuming
+    /// their own segments, so this is a no-op for them.)
+    fn with_postfix(&mut self, base: Expr, start: usize) -> Result<Expr, CompileError> {
+        let segments = self.parse_path_segments()?;
+        if segments.is_empty() {
+            Ok(base)
+        } else {
+            Ok(Expr {
+                kind: ExprKind::Access {
+                    base: Box::new(base),
+                    segments,
+                },
+                span: Span::new(start, self.pos),
+            })
+        }
+    }
+
+    fn parse_primary_inner(&mut self, start: usize) -> Result<Expr, CompileError> {
         match self.peek() {
             Some(b'(') => {
                 self.pos += 1;
@@ -790,16 +1160,9 @@ impl<'a> Parser<'a> {
                     loop {
                         self.skip_ws();
                         items.push(self.parse_expr()?);
-                        self.skip_ws();
-                        if self.peek() == Some(b',') {
-                            self.pos += 1;
-                            self.skip_ws();
-                            if self.peek() == Some(b']') {
-                                break;
-                            }
-                            continue;
+                        if matches!(self.expr_item_sep(b']'), ItemEnd::Closed) {
+                            break;
                         }
-                        break;
                     }
                 }
                 self.expect(b']')?;
@@ -810,27 +1173,38 @@ impl<'a> Parser<'a> {
             }
             Some(b'{') => {
                 self.pos += 1;
-                let mut entries: Vec<(SmolStr, Expr)> = Vec::new();
+                let mut entries: Vec<ObjEntry> = Vec::new();
                 self.skip_ws();
                 if self.peek() != Some(b'}') {
                     loop {
                         self.skip_ws();
-                        let key = self.parse_double_quoted_string()?;
+                        let key = if self.peek() == Some(b'[') {
+                            self.pos += 1;
+                            self.skip_ws();
+                            let ke = self.parse_expr()?;
+                            self.skip_ws();
+                            self.expect(b']')?;
+                            LitKey::Computed(ke)
+                        } else {
+                            LitKey::Static(self.parse_double_quoted_string()?)
+                        };
                         self.skip_ws();
+                        let optional = self.peek() == Some(b'?');
+                        if optional {
+                            self.pos += 1;
+                            self.skip_ws();
+                        }
                         self.expect(b':')?;
                         self.skip_ws();
                         let value = self.parse_expr()?;
-                        entries.push((key, value));
-                        self.skip_ws();
-                        if self.peek() == Some(b',') {
-                            self.pos += 1;
-                            self.skip_ws();
-                            if self.peek() == Some(b'}') {
-                                break;
-                            }
-                            continue;
+                        entries.push(ObjEntry {
+                            key,
+                            value,
+                            optional,
+                        });
+                        if matches!(self.expr_item_sep(b'}'), ItemEnd::Closed) {
+                            break;
                         }
-                        break;
                     }
                 }
                 self.expect(b'}')?;
@@ -1175,6 +1549,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 break;
             }
+            // Branches may also be separated by a line break (DESIGN §2).
+            if self.peek().is_some() && self.newline_behind() {
+                continue;
+            }
             return Err(CompileError::Syntax {
                 message: format!(
                     "expected ',' or '}}' in `when` table, found '{}'",
@@ -1359,6 +1737,7 @@ fn unescape(s: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('"') => out.push('"'),
                 Some('\'') => out.push('\''),
+                Some('{') => out.push('{'),
                 Some('\\') | None => out.push('\\'),
                 Some(other) => {
                     out.push('\\');
@@ -1367,6 +1746,44 @@ fn unescape(s: &str) -> String {
             }
         } else {
             out.push(c);
+        }
+    }
+    out
+}
+
+/// Inverse of `unescape`, kept beside it so the escape table has one home.
+/// Used by the formatter for string literals and object keys.
+pub(crate) fn escape(s: &str, quote: char) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// `escape` for interpolation text: additionally escapes `{` so the re-emitted
+/// text can never form a `{{` hole opener.
+pub(crate) fn escape_interp_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '{' => out.push_str("\\{"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
         }
     }
     out

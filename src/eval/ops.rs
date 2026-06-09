@@ -1,6 +1,6 @@
 //! Operators — binary, unary, and the numeric/equality/comparison helpers.
 
-use super::{evaluate_expr, Scope};
+use super::{evaluate_expr, Scope, Scopes};
 use crate::error::{RenderError, Span};
 use crate::parse::{BinOp, Expr, UnOp};
 use crate::value::Value;
@@ -13,7 +13,7 @@ pub(super) fn evaluate_binary(
     rhs: &Expr,
     span: Span,
     input: &Value,
-    lets: &Scope,
+    lets: &Scopes,
     this: &Scope,
 ) -> Result<Value, RenderError> {
     match op {
@@ -55,6 +55,7 @@ pub(super) fn evaluate_binary(
         BinOp::Sub => arith(&l, &r, span, i64::checked_sub, Decimal::checked_sub),
         BinOp::Mul => arith(&l, &r, span, i64::checked_mul, Decimal::checked_mul),
         BinOp::Div => div(&l, &r, span),
+        BinOp::Mod => rem(&l, &r, span),
         BinOp::Eq => Ok(Value::Bool(values_equal(&l, &r))),
         BinOp::Ne => Ok(Value::Bool(!values_equal(&l, &r))),
         BinOp::Lt => compare(&l, &r, span).map(|c| Value::Bool(c == Ordering::Less)),
@@ -70,7 +71,7 @@ pub(super) fn evaluate_unary(
     operand: &Expr,
     span: Span,
     input: &Value,
-    lets: &Scope,
+    lets: &Scopes,
     this: &Scope,
 ) -> Result<Value, RenderError> {
     let v = evaluate_expr(operand, input, lets, this)?;
@@ -146,6 +147,37 @@ fn div(l: &Value, r: &Value, span: Span) -> Result<Value, RenderError> {
         .ok_or(RenderError::ArithmeticOverflow { span })
 }
 
+fn rem(l: &Value, r: &Value, span: Span) -> Result<Value, RenderError> {
+    // Int % Int stays an Int; any Decimal operand promotes the result.
+    if let (Value::Int(a), Value::Int(b)) = (l, r) {
+        if *b == 0 {
+            return Err(RenderError::DivideByZero { span });
+        }
+        return a
+            .checked_rem(*b)
+            .map(Value::Int)
+            .ok_or(RenderError::ArithmeticOverflow { span });
+    }
+    let (a, b) = match (l, r) {
+        (Value::Decimal(a), Value::Decimal(b)) => (*a, *b),
+        (Value::Int(a), Value::Decimal(b)) => (Decimal::from(*a), *b),
+        (Value::Decimal(a), Value::Int(b)) => (*a, Decimal::from(*b)),
+        _ => {
+            return Err(RenderError::TypeMismatch {
+                expected: "number",
+                got: format!("{} and {}", l.kind(), r.kind()),
+                span,
+            });
+        }
+    };
+    if b.is_zero() {
+        return Err(RenderError::DivideByZero { span });
+    }
+    a.checked_rem(b)
+        .map(Value::Decimal)
+        .ok_or(RenderError::ArithmeticOverflow { span })
+}
+
 pub(super) fn require_bool(v: &Value, span: Span) -> Result<bool, RenderError> {
     match v {
         Value::Bool(b) => Ok(*b),
@@ -157,7 +189,7 @@ pub(super) fn require_bool(v: &Value, span: Span) -> Result<bool, RenderError> {
     }
 }
 
-fn values_equal(l: &Value, r: &Value) -> bool {
+pub(super) fn values_equal(l: &Value, r: &Value) -> bool {
     match (l, r) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,

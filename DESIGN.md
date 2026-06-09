@@ -1,12 +1,12 @@
 # Temple — Design
 
 > [!NOTE]
-> **The design — now largely realized.** This is the source of truth for what
-> Temple *is*; milestones 1–7 of 8 implement it. See
-> [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the as-built map and
-> [`README.md`](README.md) for status. Everything here is settled unless flagged
-> under [§10 Open question](#10-open-question); the few still-aspirational pieces
-> (`format`, source-underlined diagnostics) are marked inline.
+> **The design — now realized.** This is the source of truth for what Temple
+> *is*; milestones 1–8 of 9 implement it, including `format` and underlined
+> diagnostics. See [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the as-built map
+> and [`README.md`](README.md) for status. Everything here is settled unless
+> flagged under [§10 Open question](#10-open-question). The remaining milestone
+> (9) is a web editor component — see [`M9-EDITOR.md`](M9-EDITOR.md).
 
 ## Contents
 
@@ -111,7 +111,9 @@ compose; expressions compose *inside* a hole.
 
 Newlines separate entries in objects, arrays, and `when` blocks. Commas are
 optional, and trailing commas are always fine — adding a line never makes you
-touch the line above.
+touch the line above. One nuance: a line ending in an operator continues its
+expression onto the next line (`1 +⏎2` is one entry), so use commas where an
+entry could read as a continuation.
 
 ### Output shapes
 
@@ -196,7 +198,7 @@ Loosest to tightest binding:
 &&                       logical and
 == != < <= > >=          comparison
 + -                      additive
-* /                      multiplicative
+* / %                    multiplicative
 - !                      unary prefix
 .  []  ()  .m()  ?.      postfix: field, index, call, method, optional access
 ```
@@ -261,11 +263,21 @@ collection methods, not loops. What this costs a render is covered in
 
 ### Functions
 
-Functions are called as `name(arg, …)` — a fixed set of pure scalar helpers:
-`abs`, `round`, `floor`, `ceil`, `min`, `max`, `upper`, `lower`, `trim`,
-`to_string`, `len`. They are dispatched by matching the name, not through a
-string-keyed map. (Operations *on a collection* are methods, above; scalar
-helpers are functions.)
+Functions are called as `name(arg, …)` — pure helpers dispatched by matching the
+name (not a string-keyed map):
+
+- **numeric:** `abs`, `round`, `floor`, `ceil`, `min`, `max`
+- **string:** `upper`, `lower`, `trim`, `concat` (variadic, auto-stringifies scalars)
+- **conversion / introspection:** `to_string`, `to_number`, `type_of`, `is_null` / `is_bool` / `is_number` / `is_string` / `is_array` / `is_object` (length is the `.len()` *method* — one spelling)
+- **encoding:** `json_encode`, `url_encode`, `base64`
+
+Operations *on a collection or string receiver* are methods (`arr.sort()`,
+`s.split(",")`, `obj.merge(other)`); standalone helpers are functions. Methods
+chain off any expression, not just a path — `[1, 2].sort()`, `f(x).method()`.
+
+A local binding can be introduced mid-expression with **`let NAME = EXPR in EXPR`** —
+usable anywhere, including inside a `when` branch; it shadows outer names and never
+leaks past its body.
 
 ### Literals & constructors
 
@@ -275,7 +287,11 @@ double quotes.
 
 An expression can also **construct** values — an object literal
 `{ "k": expr, … }` or an array literal `[ expr, … ]`. This is how a `map` lambda
-reshapes each element into a new object.
+reshapes each element into a new object. Object literals also allow a **computed
+key** `{ [expr]: v }` (the key expression must evaluate to a string) and an
+**omit-if-null** entry `"k"?: expr` that drops the key when its value is null —
+the same `"k"?:` works on output-object keys too. Together with `obj.merge` and
+`obj.get`, computed keys enable group-by/index-by reshaping.
 
 ---
 
@@ -324,6 +340,11 @@ is **one** input root — context, secrets, env all nest under it. Taking `Value
 rather than a generic `impl Serialize` is deliberate: the caller builds
 `Value::Decimal` explicitly, so precision is never lost to an `f64` field on the
 way in.
+
+With the opt-in `json` feature, `serde_json::Value` converts in both directions
+through the same precision rule: numbers travel as their **verbatim tokens**
+(`"129.99"` → exact `Decimal`, and back out as an exact JSON number token),
+never through `f64`.
 
 ---
 
@@ -435,7 +456,7 @@ operation budget can cap total work where a hard ceiling is wanted.
 // Author-time (called by your save handler or template editor)
 Template::compile(src: &str)  -> Result<Template, Vec<CompileError>>
 Template::validate(src: &str) -> Result<(), Vec<CompileError>>      // same checks, no Template kept
-Template::format(src: &str)   -> Result<String, Vec<CompileError>>  // canonical layout — milestone 8, not yet implemented
+Template::format(src: &str)   -> Result<String, Vec<CompileError>>  // canonical, idempotent layout
 Template::to_bytes(&self)     -> Vec<u8>
 
 // Render time (hot path)
@@ -450,9 +471,10 @@ Template::render_value(&self, input: impl Into<Value>)
 target. Use `render_value` to get the dynamic value back.
 
 `validate` and `format` are author-time helpers — call them from a save handler
-or an editor integration to give the author immediate feedback. Both reuse
-`compile`'s parser and checks; `validate` discards the result, `format` re-emits
-the source in a canonical layout.
+or an editor integration to give the author immediate feedback. `validate` runs
+the full compile pipeline and discards the result; `format` runs the parser and
+the size caps only (so a template can be formatted before its names resolve)
+and re-emits the source in a canonical layout.
 
 ### Errors
 
@@ -466,17 +488,16 @@ enums** carrying rich context:
 | `RenderError` | `render` | missing path · type mismatch · function failure · arithmetic overflow · divide by zero · value-too-deep · deserialize failure — each with the offending sub-expression's span |
 
 `compile` / `validate` return `Vec<CompileError>` so the author fixes everything
-in one save. Today the **resolver** delivers on that — it collects every
-reference, cycle, and validation error in one pass; the **parser** is still
-fail-fast on the first syntax error. `render` fails fast on the first error
-(it's the hot path).
+in one save: the **resolver** collects every reference, cycle, and validation
+error in one pass, and the **parser** recovers at object-field / array-item
+boundaries so independent syntax errors come back together too. `render` fails
+fast on the first error (it's the hot path).
 
-*Milestone 8.* Messages will quote the source, underline the offending fragment,
-and suggest fixes where the names are statically known — e.g. `this.taxs` →
-*did you mean `this.tax`?* The groundwork is in place: a source span sits on
-every AST node from day one (retrofitting spans is painful), so today's messages
-already carry the offending byte range — they just print it as `12..15` rather
-than an underlined line/column snippet.
+`CompileError::report(src)` quotes the source, underlines the offending fragment
+with a line/column caret, and suggests a fix where the name is statically known —
+e.g. `this.taxs` → *did you mean `this.tax`?* This rests on a source span sitting
+on every AST node from day one (retrofitting spans is painful); `Display` keeps a
+terse byte-offset form for when there's no source at hand.
 
 **Temple never panics on a template or input, and never decides how a failure is
 handled.** A failure is a typed value the caller owns. `render::<T>` returns
@@ -575,7 +596,7 @@ iteration: the `map` / `filter` / `fold` collection methods
 | `criterion` | benchmarking (dev) |
 | *(parser)* | hand-written recursive descent — no parser crate |
 
-Size: ~3,400 lines of Rust (the hand-written parser is ~1,400 of them).
+Size: ~4,000 lines of Rust (the hand-written parser is ~1,600 of them).
 
 ### Roadmap
 
@@ -590,7 +611,8 @@ Size: ~3,400 lines of Rust (the hand-written parser is ~1,400 of them).
 - [x] `to_bytes` / `from_bytes` — the compiled blob
 - [x] `render` and serde deserialization of results
 - [x] `criterion` benchmark suite
-- [ ] `format` + source-underlined diagnostics (line/column, did-you-mean) — milestone 8
+- [x] `format`, parser error recovery, source-underlined diagnostics (line/column, did-you-mean) — milestone 8
+- [ ] web editor component — intellisense, inline diagnostics + warnings, format-on-save ([M9](M9-EDITOR.md))
 
 ### The name
 

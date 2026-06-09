@@ -2,7 +2,7 @@
 //! the value-depth guard applied to whatever the path produces.
 
 use super::methods::call_method;
-use super::{evaluate_expr, Scope};
+use super::{evaluate_expr, Scope, Scopes};
 use crate::error::{RenderError, Span};
 use crate::parse::PathSegment;
 use crate::value::Value;
@@ -79,10 +79,10 @@ pub(super) fn evaluate_path(
     root_span: Span,
     segments: &[PathSegment],
     input: &Value,
-    lets: &Scope,
+    lets: &Scopes,
     this: &Scope,
 ) -> Result<Value, RenderError> {
-    let (mut current, start_idx): (Cursor, usize) = match root.as_str() {
+    let (current, start_idx): (Cursor, usize) = match root.as_str() {
         "input" => (Cursor::Borrowed(input), 0),
         "this" => match segments.first() {
             Some(PathSegment::Field { name, span, .. }) => match this.get(name) {
@@ -115,7 +115,39 @@ pub(super) fn evaluate_path(
         },
     };
 
-    for segment in &segments[start_idx..] {
+    walk_segments(
+        current,
+        root_span,
+        &segments[start_idx..],
+        input,
+        lets,
+        this,
+    )
+}
+
+/// Walk trailing `.field` / `?.field` / `.method()` / `[idx]` segments against a
+/// value reached through *any* expression (a literal, a call result, a paren'd
+/// expression), not just an identifier root.
+pub(super) fn evaluate_access(
+    base: Value,
+    base_span: Span,
+    segments: &[PathSegment],
+    input: &Value,
+    lets: &Scopes,
+    this: &Scope,
+) -> Result<Value, RenderError> {
+    walk_segments(Cursor::Owned(base), base_span, segments, input, lets, this)
+}
+
+fn walk_segments(
+    mut current: Cursor,
+    root_span: Span,
+    segments: &[PathSegment],
+    input: &Value,
+    lets: &Scopes,
+    this: &Scope,
+) -> Result<Value, RenderError> {
+    for segment in segments {
         match segment {
             PathSegment::Field {
                 name,
@@ -158,6 +190,13 @@ pub(super) fn evaluate_path(
                             let u = array_index(&idx, a.len(), *span)?;
                             Cursor::Borrowed(&a[u])
                         }
+                        Value::Obj(o) => match &idx {
+                            Value::Str(k) => match o.get(k) {
+                                Some(v) => Cursor::Borrowed(v),
+                                None => return Err(missing_field(k, *span)),
+                            },
+                            other => return Err(not_string_key(other, *span)),
+                        },
                         other => return Err(not_indexable(other, *span)),
                     },
                     Cursor::Owned(mut owned) => match &mut owned {
@@ -165,6 +204,13 @@ pub(super) fn evaluate_path(
                             let u = array_index(&idx, a.len(), *span)?;
                             Cursor::Owned(a.swap_remove(u))
                         }
+                        Value::Obj(o) => match &idx {
+                            Value::Str(k) => match o.swap_remove(k.as_str()) {
+                                Some(v) => Cursor::Owned(v),
+                                None => return Err(missing_field(k, *span)),
+                            },
+                            other => return Err(not_string_key(other, *span)),
+                        },
                         other => return Err(not_indexable(other, *span)),
                     },
                 };
@@ -194,6 +240,14 @@ fn not_object(v: &Value, span: Span) -> RenderError {
 
 fn not_indexable(v: &Value, span: Span) -> RenderError {
     RenderError::NotIndexable {
+        got: v.kind().to_string(),
+        span,
+    }
+}
+
+fn not_string_key(v: &Value, span: Span) -> RenderError {
+    RenderError::TypeMismatch {
+        expected: "string key for object index",
         got: v.kind().to_string(),
         span,
     }

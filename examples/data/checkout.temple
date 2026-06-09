@@ -1,11 +1,11 @@
 let items = input.items
 let total = items.fold(0, (acc, item) -> acc + item.price * item.qty)
 {
-    "count":         {{ items.length() }},
+    "count":         {{ items.len() }},
     "item_names":    {{ items.map(item -> item.name) }},
     "discounted":    {{ items.filter(item -> item.price >= 5).map(item -> item.name) }},
     "first_item":    {{ items[0].name }},
     "total":         {{ total }},
-    "average":       {{ total / items.length() }},
+    "average":       {{ total / items.len() }},
     "free_shipping": {{ this.total >= 50 }}
 }

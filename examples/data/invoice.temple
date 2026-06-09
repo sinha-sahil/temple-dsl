@@ -2,7 +2,7 @@ let prices = input.lines.map(line -> line.price)
 {
     "customer":   {{ upper(input.customer) }},
     "items":      {{ input.lines.map(line -> upper(line.name)) }},
-    "item_count": {{ len(input.lines) }},
+    "item_count": {{ input.lines.len() }},
     "subtotal":   {{ prices.fold(0, (acc, p) -> acc + p) }},
     "tax":        {{ round(this.subtotal * input.tax_rate, 2) }},
     "total":      {{ this.subtotal + this.tax }},

@@ -12,7 +12,10 @@ keywords = ["template", "dsl", "json", "render", "data"]
 categories = ["template-engine", "parser-implementations"]
 
 [features]
-cli = ["dep:serde_json"]
+# Exact From conversions between temple_dsl::Value and serde_json::Value —
+# decimals travel as verbatim digit tokens, never through f64.
+json = ["dep:serde_json"]
+cli = ["json"]
 
 [dependencies]
 rust_decimal = { version = "1", features = ["serde"] }

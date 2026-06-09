@@ -1,6 +1,7 @@
 mod compile;
 mod error;
 mod eval;
+mod format;
 mod parse;
 mod value;
 

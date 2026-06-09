@@ -1,7 +1,8 @@
 use crate::error::{CompileError, LoadError, RenderError, Span};
-use crate::eval::{self, Scope};
+use crate::eval::{self, Scope, Scopes};
 use crate::parse::{
-    self, Expr, ExprKind, InterpPart, LetBinding, Module, OutKind, OutNode, PathSegment,
+    self, Expr, ExprKind, InterpPart, LetBinding, Lit, LitKey, Module, ObjField, OutKind, OutNode,
+    PathSegment,
 };
 use crate::value::Value;
 use indexmap::IndexMap;
@@ -10,7 +11,7 @@ use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 
 const RESERVED: &[&str] = &[
-    "input", "this", "let", "when", "else", "true", "false", "null",
+    "input", "this", "let", "in", "when", "else", "true", "false", "null",
 ];
 
 /// Source-size cap, rejected at compile so a pathological template never reaches render.
@@ -52,6 +53,22 @@ impl Template {
     /// a save handler or editor integration.
     pub fn validate(src: &str) -> Result<(), Vec<CompileError>> {
         Self::compile(src).map(|_| ())
+    }
+
+    /// Re-emit `src` in Temple's canonical layout. Requires only that the source
+    /// parses (not that it resolves), so an editor can format-on-type before the
+    /// names are wired up. Idempotent: formatting the output yields the same string.
+    pub fn format(src: &str) -> Result<String, Vec<CompileError>> {
+        // Same size cap as `compile` — format is an author-time entry point too,
+        // and the cap is the guard that bounds parse cost.
+        if src.len() > MAX_SOURCE_BYTES {
+            return Err(vec![CompileError::TooLarge {
+                bytes: src.len(),
+                limit: MAX_SOURCE_BYTES,
+            }]);
+        }
+        let module = parse::parse(src)?;
+        Ok(crate::format::format_module(&module))
     }
 
     /// Serialize the compiled template to a versioned blob for storage. The
@@ -118,27 +135,32 @@ impl Template {
 
         let mut lets: Scope = HashMap::with_capacity(self.module.lets.len());
         for binding in &self.module.lets {
-            let v = eval::evaluate_expr(&binding.expr, input, &lets, &empty_this)?;
+            let v = eval::evaluate_expr(&binding.expr, input, &Scopes::base(&lets), &empty_this)?;
             lets.insert(binding.name.clone(), v);
         }
+        let scopes = Scopes::base(&lets);
 
         match &self.module.output.kind {
             OutKind::Object(fields) => {
                 let mut this: Scope = HashMap::with_capacity(fields.len());
                 for &idx in &self.output_order {
-                    let (key, node) = &fields[idx];
-                    let v = eval::evaluate(node, input, &lets, &this)?;
-                    this.insert(key.clone(), v);
+                    let field = &fields[idx];
+                    let v = eval::evaluate(&field.value, input, &scopes, &this)?;
+                    this.insert(field.key.clone(), v);
                 }
                 let mut result = IndexMap::with_capacity(fields.len());
-                for (key, _) in fields {
-                    if let Some(v) = this.remove(key) {
-                        result.insert(key.clone(), v);
+                for field in fields {
+                    if let Some(v) = this.remove(&field.key) {
+                        // `"key"?:` drops the key when its value is null.
+                        if field.optional && matches!(v, Value::Null) {
+                            continue;
+                        }
+                        result.insert(field.key.clone(), v);
                     }
                 }
                 Ok(Value::Obj(result))
             }
-            _ => eval::evaluate(&self.module.output, input, &lets, &empty_this),
+            _ => eval::evaluate(&self.module.output, input, &scopes, &empty_this),
         }
     }
 }
@@ -157,7 +179,7 @@ fn resolve(module: &Module) -> Result<Vec<usize>, Vec<CompileError>> {
     }
 
     let output_keys: Option<HashSet<SmolStr>> = match &module.output.kind {
-        OutKind::Object(fields) => Some(fields.iter().map(|(k, _)| k.clone()).collect()),
+        OutKind::Object(fields) => Some(fields.iter().map(|f| f.key.clone()).collect()),
         _ => None,
     };
     validate_out_node(
@@ -232,8 +254,9 @@ fn validate_expr(
                         }),
                         Some(PathSegment::Field { name, span, .. }) => {
                             if !keys.contains(name) {
+                                let hint = did_you_mean(name, keys.iter().map(SmolStr::as_str));
                                 errors.push(CompileError::Syntax {
-                                    message: format!("unknown output key 'this.{name}'"),
+                                    message: format!("unknown output key 'this.{name}'{hint}"),
                                     span: *span,
                                 });
                             }
@@ -246,8 +269,12 @@ fn validate_expr(
                 },
                 _ => {
                     if !lets.contains(root) && !lambda_params.contains(root) {
+                        let mut cands: Vec<&str> = vec!["input", "this"];
+                        cands.extend(lets.iter().map(SmolStr::as_str));
+                        cands.extend(lambda_params.iter().map(SmolStr::as_str));
+                        let hint = did_you_mean(root, cands);
                         errors.push(CompileError::Syntax {
-                            message: format!("unknown identifier '{root}'"),
+                            message: format!("unknown identifier '{root}'{hint}"),
                             span: *root_span,
                         });
                     }
@@ -281,6 +308,23 @@ fn validate_expr(
             }
             validate_expr(body, lets, output_keys, &inner, errors);
         }
+        ExprKind::Let {
+            name,
+            name_span,
+            value,
+            body,
+        } => {
+            if RESERVED.contains(&name.as_str()) {
+                errors.push(CompileError::Syntax {
+                    message: format!("'{name}' is a reserved name"),
+                    span: *name_span,
+                });
+            }
+            validate_expr(value, lets, output_keys, lambda_params, errors);
+            let mut inner = lets.clone();
+            inner.insert(name.clone());
+            validate_expr(body, &inner, output_keys, lambda_params, errors);
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             validate_expr(lhs, lets, output_keys, lambda_params, errors);
             validate_expr(rhs, lets, output_keys, lambda_params, errors);
@@ -313,14 +357,21 @@ fn validate_expr(
         }
         ExprKind::ObjectLit(entries) => {
             let mut seen: HashSet<&SmolStr> = HashSet::new();
-            for (k, e) in entries {
-                if !seen.insert(k) {
-                    errors.push(CompileError::Syntax {
-                        message: format!("duplicate key '{k}' in object literal"),
-                        span: e.span,
-                    });
+            for entry in entries {
+                match &entry.key {
+                    LitKey::Static(k) => {
+                        if !seen.insert(k) {
+                            errors.push(CompileError::Syntax {
+                                message: format!("duplicate key '{k}' in object literal"),
+                                span: entry.value.span,
+                            });
+                        }
+                    }
+                    LitKey::Computed(ke) => {
+                        validate_expr(ke, lets, output_keys, lambda_params, errors);
+                    }
                 }
-                validate_expr(e, lets, output_keys, lambda_params, errors);
+                validate_expr(&entry.value, lets, output_keys, lambda_params, errors);
             }
         }
         ExprKind::FuncCall {
@@ -329,13 +380,53 @@ fn validate_expr(
             args,
         } => {
             if !eval::is_known_function(name) {
+                let hint = did_you_mean(name, eval::BUILTINS.iter().copied());
                 errors.push(CompileError::Syntax {
-                    message: format!("unknown function '{name}'"),
+                    message: format!("unknown function '{name}'{hint}"),
                     span: *name_span,
                 });
             }
             for a in args {
                 validate_expr(a, lets, output_keys, lambda_params, errors);
+            }
+        }
+        ExprKind::Access { base, segments } => {
+            // A literal base has a statically-known type, so a nonsensical
+            // access is a compile error here, not a per-render failure.
+            if let ExprKind::Literal(lit) = &base.kind {
+                let is_str = matches!(lit, Lit::Str(_));
+                for seg in segments {
+                    let (bad, what) = match seg {
+                        PathSegment::Field { span, .. } => (true, ("field access", span)),
+                        PathSegment::Index { span, .. } => (true, ("indexing", span)),
+                        PathSegment::Method { span, .. } if !is_str => (true, ("methods", span)),
+                        _ => (false, ("", &base.span)),
+                    };
+                    if bad {
+                        errors.push(CompileError::Syntax {
+                            message: format!(
+                                "a {} literal does not support {}",
+                                lit_kind(lit),
+                                what.0
+                            ),
+                            span: *what.1,
+                        });
+                    }
+                }
+            }
+            validate_expr(base, lets, output_keys, lambda_params, errors);
+            for seg in segments {
+                match seg {
+                    PathSegment::Field { .. } => {}
+                    PathSegment::Method { args, .. } => {
+                        for a in args {
+                            validate_expr(a, lets, output_keys, lambda_params, errors);
+                        }
+                    }
+                    PathSegment::Index { expr, .. } => {
+                        validate_expr(expr, lets, output_keys, lambda_params, errors);
+                    }
+                }
             }
         }
     }
@@ -353,14 +444,14 @@ fn validate_out_node(
         OutKind::Hole(expr) => validate_expr(expr, lets, output_keys, lambda_params, errors),
         OutKind::Object(fields) => {
             let mut seen: HashSet<&SmolStr> = HashSet::new();
-            for (k, child) in fields {
-                if !seen.insert(k) {
+            for field in fields {
+                if !seen.insert(&field.key) {
                     errors.push(CompileError::Syntax {
-                        message: format!("duplicate output key '{k}'"),
-                        span: child.span,
+                        message: format!("duplicate output key '{}'", field.key),
+                        span: field.value.span,
                     });
                 }
-                validate_out_node(child, lets, output_keys, lambda_params, errors);
+                validate_out_node(&field.value, lets, output_keys, lambda_params, errors);
             }
         }
         OutKind::Array(items) => {
@@ -378,17 +469,17 @@ fn validate_out_node(
     }
 }
 
-fn topo_sort_fields(fields: &[(SmolStr, OutNode)]) -> Result<Vec<usize>, CompileError> {
+fn topo_sort_fields(fields: &[ObjField]) -> Result<Vec<usize>, CompileError> {
     let key_to_idx: HashMap<&str, usize> = fields
         .iter()
         .enumerate()
-        .map(|(i, (k, _))| (k.as_str(), i))
+        .map(|(i, f)| (f.key.as_str(), i))
         .collect();
 
     let mut deps: Vec<HashSet<usize>> = vec![HashSet::new(); fields.len()];
-    for (i, (_, node)) in fields.iter().enumerate() {
+    for (i, field) in fields.iter().enumerate() {
         let mut this_refs: HashSet<SmolStr> = HashSet::new();
-        collect_this_refs_in_out(node, &mut this_refs);
+        collect_this_refs_in_out(&field.value, &mut this_refs);
         for r in &this_refs {
             if let Some(&j) = key_to_idx.get(r.as_str()) {
                 deps[i].insert(j);
@@ -415,12 +506,12 @@ fn topo_sort_fields(fields: &[(SmolStr, OutNode)]) -> Result<Vec<usize>, Compile
     if order.len() != fields.len() {
         let stuck: Vec<&str> = (0..fields.len())
             .filter(|&i| !order.contains(&i))
-            .map(|i| fields[i].0.as_str())
+            .map(|i| fields[i].key.as_str())
             .collect();
         let span = stuck
             .first()
             .and_then(|name| key_to_idx.get(name))
-            .map_or(Span::new(0, 0), |&i| fields[i].1.span);
+            .map_or(Span::new(0, 0), |&i| fields[i].value.span);
         return Err(CompileError::Syntax {
             message: format!("cycle in `this` references involving: {}", stuck.join(", ")),
             span,
@@ -435,8 +526,8 @@ fn collect_this_refs_in_out(node: &OutNode, refs: &mut HashSet<SmolStr>) {
         OutKind::Literal(_) => {}
         OutKind::Hole(expr) => collect_this_refs_in_expr(expr, refs),
         OutKind::Object(fields) => {
-            for (_, c) in fields {
-                collect_this_refs_in_out(c, refs);
+            for field in fields {
+                collect_this_refs_in_out(&field.value, refs);
             }
         }
         OutKind::Array(items) => {
@@ -476,6 +567,10 @@ fn collect_this_refs_in_expr(expr: &Expr, refs: &mut HashSet<SmolStr>) {
             }
         }
         ExprKind::Lambda { body, .. } => collect_this_refs_in_expr(body, refs),
+        ExprKind::Let { value, body, .. } => {
+            collect_this_refs_in_expr(value, refs);
+            collect_this_refs_in_expr(body, refs);
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             collect_this_refs_in_expr(lhs, refs);
             collect_this_refs_in_expr(rhs, refs);
@@ -505,8 +600,11 @@ fn collect_this_refs_in_expr(expr: &Expr, refs: &mut HashSet<SmolStr>) {
             }
         }
         ExprKind::ObjectLit(entries) => {
-            for (_, e) in entries {
-                collect_this_refs_in_expr(e, refs);
+            for entry in entries {
+                if let LitKey::Computed(ke) = &entry.key {
+                    collect_this_refs_in_expr(ke, refs);
+                }
+                collect_this_refs_in_expr(&entry.value, refs);
             }
         }
         ExprKind::FuncCall { args, .. } => {
@@ -514,5 +612,70 @@ fn collect_this_refs_in_expr(expr: &Expr, refs: &mut HashSet<SmolStr>) {
                 collect_this_refs_in_expr(a, refs);
             }
         }
+        ExprKind::Access { base, segments } => {
+            collect_this_refs_in_expr(base, refs);
+            for seg in segments {
+                match seg {
+                    PathSegment::Field { .. } => {}
+                    PathSegment::Method { args, .. } => {
+                        for a in args {
+                            collect_this_refs_in_expr(a, refs);
+                        }
+                    }
+                    PathSegment::Index { expr, .. } => collect_this_refs_in_expr(expr, refs),
+                }
+            }
+        }
     }
+}
+
+fn lit_kind(lit: &Lit) -> &'static str {
+    match lit {
+        Lit::Null => "null",
+        Lit::Bool(_) => "bool",
+        Lit::Int(_) => "int",
+        Lit::Decimal(_) => "decimal",
+        Lit::Str(_) => "string",
+    }
+}
+
+/// A ` — did you mean \`x\`?` suffix when `target` is a plausible typo of one of
+/// `candidates`, else empty. Used to enrich unknown-name compile errors.
+fn did_you_mean<'a>(target: &str, candidates: impl IntoIterator<Item = &'a str>) -> String {
+    match closest(target, candidates) {
+        Some(s) => format!(" — did you mean `{s}`?"),
+        None => String::new(),
+    }
+}
+
+fn closest<'a>(target: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let mut best: Option<(&str, usize)> = None;
+    for c in candidates {
+        let d = edit_distance(target, c);
+        match best {
+            Some((_, bd)) if d >= bd => {}
+            _ => best = Some((c, d)),
+        }
+    }
+    // Suggest only for a close, non-trivial match — never for a length-1 target
+    // (every other short name is "distance 1" and the suggestion would be noise).
+    best.filter(|&(_, d)| d > 0 && d <= 2 && d < target.chars().count())
+        .map(|(c, _)| c)
+}
+
+/// Levenshtein distance over chars, with the usual two-row DP.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
