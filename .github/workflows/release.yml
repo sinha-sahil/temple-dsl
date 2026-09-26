@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: read
+  id-token: write
 
 jobs:
   lint-and-build:
@@ -27,16 +28,19 @@ jobs:
           echo "📖 Reading current version from Cargo.toml..."
           CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
-          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Bump version in Cargo.toml
         id: new_version
         run: |
-          echo "🔢 Analyzing commit message for version bump type..."
+          echo "🔢 Analyzing commits since the last release for version bump type..."
           CURRENT_VERSION="${{ steps.current_version.outputs.current_version }}"
-          # Get the latest commit message
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "Latest commit message: $COMMIT_MSG"
+          # Every commit since the last tag counts, so a trailing ci or docs
+          # commit can't turn a pending feature release into a patch
+          LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          SUBJECTS=$(git log --format=%s "${LAST_TAG:+$LAST_TAG..}HEAD")
+          echo "Commits since ${LAST_TAG:-the first commit}:"
+          echo "$SUBJECTS"
 
           # Parse version parts (assuming semantic versioning x.y.z)
           IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
@@ -44,20 +48,20 @@ jobs:
           MINOR=${VERSION_PARTS[1]}
           PATCH=${VERSION_PARTS[2]}
 
-          # Determine bump type based on commit message
-          if [[ "$COMMIT_MSG" =~ ^feat!\s*: ]]; then
+          # The largest bump any of those commits asks for wins
+          if grep -qE '^feat![[:space:]]*:' <<< "$SUBJECTS"; then
               echo "🚀 Breaking change detected (feat!:) - MAJOR bump"
               NEW_MAJOR=$((MAJOR + 1))
               NEW_MINOR=0
               NEW_PATCH=0
               BUMP_TYPE="major"
-          elif [[ "$COMMIT_MSG" =~ ^feat\s*: ]]; then
+          elif grep -qE '^feat[[:space:]]*:' <<< "$SUBJECTS"; then
               echo "✨ Feature detected (feat:) - MINOR bump"
               NEW_MAJOR=$MAJOR
               NEW_MINOR=$((MINOR + 1))
               NEW_PATCH=0
               BUMP_TYPE="minor"
-          elif [[ "$COMMIT_MSG" =~ ^fix\s*: ]]; then
+          elif grep -qE '^fix[[:space:]]*:' <<< "$SUBJECTS"; then
               echo "🐛 Fix detected (fix:) - PATCH bump"
               NEW_MAJOR=$MAJOR
               NEW_MINOR=$MINOR
@@ -82,8 +86,8 @@ jobs:
           echo "Updated Cargo.toml:"
           grep '^version = ' Cargo.toml | head -1
 
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -126,12 +130,17 @@ jobs:
 
           echo "✅ Committed and tagged version $NEW_VERSION"
 
+      # Trusted publishing: a short-lived token instead of a stored secret
+      - name: Authenticate with crates.io
+        id: crates_io_auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
         run: |
           echo "📦 Publishing to crates.io..."
-          cargo publish --token "${CARGO_REGISTRY_TOKEN}"
+          cargo publish
           echo "✅ Successfully published to crates.io"
 
       - name: Push changes and tags
