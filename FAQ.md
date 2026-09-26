@@ -1,8 +1,8 @@
 # Temple — FAQ
 
 Implementation-level questions about how the engine actually works. For the
-design see [`DESIGN.md`](DESIGN.md); for the build plan,
-[`IMPLEMENTATION.md`](IMPLEMENTATION.md).
+design see [`DESIGN.md`](DESIGN.md); for where the code lives,
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 

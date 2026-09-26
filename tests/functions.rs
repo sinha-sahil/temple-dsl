@@ -1,6 +1,3 @@
-//! Built-in functions — `abs`/`round`/`floor`/`ceil`/`min`/`max`/`upper`/
-//! `lower`/`trim`/`to_string`/`len`, plus arity and type errors.
-
 use rust_decimal::Decimal;
 use temple_dsl::{RenderError, Template, Value};
 
@@ -201,6 +198,28 @@ fn min_empty_args_errors() {
     let template = Template::compile("{{ min() }}").expect("compile");
     let result = template.render::<i64>(Value::Null);
     assert!(matches!(result, Err(RenderError::ArityMismatch { .. })));
+}
+
+#[test]
+fn round_too_many_args_errors() {
+    let template = Template::compile("{{ round(1, 2, 3) }}").expect("compile");
+    let result = template.render::<i64>(Value::Null);
+    assert!(matches!(result, Err(RenderError::ArityMismatch { .. })));
+}
+
+#[test]
+fn wrong_builtin_arity_in_a_branch_never_taken_still_renders() {
+    // 0.3.0 checked built-in arity only when the call ran
+    let src =
+        r#"{ "a": {{ input.ok ? 1 : abs() }}, "b": {{ when { input.ok: 2, else: min() } }} }"#;
+    let template = Template::compile(src).expect("compile");
+    let out = template
+        .render_value(Value::obj([("ok", Value::Bool(true))]))
+        .expect("render");
+    assert_eq!(
+        out,
+        Value::obj([("a", Value::Int(1)), ("b", Value::Int(2))])
+    );
 }
 
 #[test]

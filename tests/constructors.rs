@@ -1,6 +1,3 @@
-//! Expression-position object literals, string interpolation, and the
-//! convenience collection methods (sum/any/all/len) from DESIGN §2-§3.
-
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use temple_dsl::{Template, Value};

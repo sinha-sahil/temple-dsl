@@ -1,6 +1,3 @@
-//! `let` bindings and `this` self-reference, ordered by a compile-time DAG
-//! (cycle-checked).
-
 use serde::Deserialize;
 use temple_dsl::{Template, Value};
 
@@ -91,7 +88,7 @@ fn let_forward_reference_errors() {
         { "x": {{ a }} }
     "#;
     let err = Template::compile(src).expect_err("expected forward-ref error");
-    assert!(format!("{err:?}").contains("unknown identifier 'b'"));
+    assert!(format!("{err:?}").contains("unknown identifier `b`"));
 }
 
 #[test]
@@ -201,14 +198,14 @@ fn this_unknown_key_errors() {
 fn this_outside_object_output_errors() {
     let src = r#"[{{ this.a }}]"#;
     let err = Template::compile(src).expect_err("expected this-outside-object error");
-    assert!(format!("{err:?}").contains("'this'"));
+    assert!(format!("{err:?}").contains("`this`"));
 }
 
 #[test]
 fn unknown_identifier_errors() {
     let src = r#"{ "x": {{ foo }} }"#;
     let err = Template::compile(src).expect_err("expected unknown ident error");
-    assert!(format!("{err:?}").contains("unknown identifier 'foo'"));
+    assert!(format!("{err:?}").contains("unknown identifier `foo`"));
 }
 
 #[test]

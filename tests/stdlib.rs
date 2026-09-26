@@ -1,6 +1,3 @@
-//! Standard-library expansion — the `%` operator, the new builtin functions,
-//! and the string / array / object methods.
-
 use rust_decimal::Decimal;
 use temple_dsl::{Template, Value};
 
@@ -34,8 +31,6 @@ fn ints(ns: &[i64]) -> Value {
     Value::Arr(ns.iter().map(|n| Value::Int(*n)).collect())
 }
 
-// ── modulo ──
-
 #[test]
 fn modulo() {
     assert_eq!(eval("{{ 7 % 3 }}"), Value::Int(1));
@@ -43,8 +38,6 @@ fn modulo() {
     assert_eq!(eval("{{ 8 % 2 == 0 }}"), Value::Bool(true));
     assert!(render_fails("{{ 5 % 0 }}", Value::Null));
 }
-
-// ── builtins ──
 
 #[test]
 fn concat_builds_strings() {
@@ -72,7 +65,7 @@ fn to_number_parses() {
     assert_eq!(eval("{{ to_number(\"42\") }}"), Value::Int(42));
     assert_eq!(eval("{{ to_number(\"3.14\") }}"), dec("3.14"));
     assert_eq!(eval("{{ to_number(\"42\") + 1 }}"), Value::Int(43));
-    assert_eq!(eval("{{ to_number(9) }}"), Value::Int(9)); // number passthrough
+    assert_eq!(eval("{{ to_number(9) }}"), Value::Int(9));
     assert!(render_fails("{{ to_number(\"nope\") }}", Value::Null));
 }
 
@@ -124,8 +117,6 @@ fn url_encode_and_base64() {
     );
 }
 
-// ── string methods ──
-
 #[test]
 fn string_methods() {
     let i = Value::obj([("s", "Hello World")]);
@@ -162,8 +153,6 @@ fn string_methods() {
         arr(vec!["a".into(), "b".into(), "c".into()])
     );
 }
-
-// ── array methods ──
 
 #[test]
 fn array_search_and_membership() {
@@ -268,8 +257,6 @@ fn make_objs() -> Value {
         Value::obj([("n", Value::from("y")), ("p", Value::Int(1))]),
     ])
 }
-
-// ── object methods ──
 
 #[test]
 fn object_methods() {

@@ -1,0 +1,1 @@
+{{ input.user.age >= 18 && input.user.country == 'US' && (input.account?.verified ?? false) }}

@@ -1,7 +1,3 @@
-//! End-to-end pipeline — a realistic template exercising the full feature set,
-//! rendered into a typed Rust struct, round-tripped through the compiled blob,
-//! and stressed for the no-panic guarantee on the new surface.
-
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -126,8 +122,6 @@ fn blob_round_trips_the_full_template() {
     assert_eq!(a, b);
 }
 
-/// Every new AST node must survive the v2 blob (compile → bytes → reload → render
-/// equals a direct render).
 #[test]
 fn blob_round_trips_each_new_feature() {
     let cases: &[(&str, Value)] = &[
@@ -165,8 +159,6 @@ fn blob_round_trips_each_new_feature() {
     }
 }
 
-/// The no-panic guarantee on the new surface: each of these must return `Err`,
-/// never panic. (A panic here unwinds and fails the test.)
 #[test]
 fn new_surface_errors_never_panic() {
     let n = Value::obj([("n", Value::Int(5))]);
@@ -177,22 +169,22 @@ fn new_surface_errors_never_panic() {
     )]);
     let obj = Value::obj([("o", Value::obj([("a", Value::Int(1))]))]);
     let cases: &[(&str, Value)] = &[
-        ("{{ 5 % 0 }}", Value::Null),                  // modulo by zero
-        ("{{ to_number(\"nope\") }}", Value::Null),    // unparseable
-        ("{{ concat(\"x\", input.a) }}", arr.clone()), // concat a collection
-        (r#"{{ { [input.n]: 1 } }}"#, n.clone()),      // non-string computed key
-        (r#"{{ input.o["missing"] }}"#, obj.clone()),  // strict index miss
-        ("{{ input.a.sort() }}", arr.clone()),         // sort mixed types
+        ("{{ 5 % 0 }}", Value::Null),
+        ("{{ to_number(\"nope\") }}", Value::Null),
+        ("{{ concat(\"x\", input.a) }}", arr.clone()),
+        (r#"{{ { [input.n]: 1 } }}"#, n.clone()),
+        (r#"{{ input.o["missing"] }}"#, obj.clone()),
+        ("{{ input.a.sort() }}", arr.clone()),
         (
             "{{ input.a.min() }}",
             Value::obj([("a", Value::Arr(vec![]))]),
-        ), // min of empty
-        ("{{ input.a.flatten() }}", arr.clone()),      // flatten non-arrays
-        ("{{ input.a.join(\"-\") }}", arr.clone()),    // join a non-scalar elem
-        ("{{ \"x\".contains(5) }}", Value::Null),      // non-string arg
-        ("{{ input.a.slice(\"x\", 2) }}", arr),        // non-int slice bound
-        ("{{ input.o.merge([1]) }}", obj),             // merge a non-object
-        ("{{ input.n.keys() }}", n),                   // method on wrong type
+        ),
+        ("{{ input.a.flatten() }}", arr.clone()),
+        ("{{ input.a.join(\"-\") }}", arr.clone()),
+        ("{{ \"x\".contains(5) }}", Value::Null),
+        ("{{ input.a.slice(\"x\", 2) }}", arr),
+        ("{{ input.o.merge([1]) }}", obj),
+        ("{{ input.n.keys() }}", n),
     ];
     for (src, input) in cases {
         let r = Template::compile(src)
@@ -224,11 +216,8 @@ fn json_encode_handles_nested_and_escapes() {
     );
 }
 
-/// One template exercising EVERY feature in the README support list — every
-/// operator, every structure (let / let-in / this / when / ternary / safe
-/// access / interp / computed & optional keys / indexing / postfix chains),
-/// every builtin, and every string/array/object method. Asserted exactly, then
-/// pushed through the blob and format round-trips.
+/// Every feature in the README list in one template, asserted exactly, then
+/// pushed through the blob and format round trips.
 const KITCHEN_SINK_SRC: &str = r#"
 # the whole language in one template
 let items = input.cart.items

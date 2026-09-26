@@ -1,82 +1,149 @@
-//! Operators — binary, unary, and the numeric/equality/comparison helpers.
-
-use super::{evaluate_expr, Scope, Scopes};
-use crate::error::{RenderError, Span};
-use crate::parse::{BinOp, Expr, UnOp};
-use crate::value::Value;
+use super::budget::Meter;
+use super::scope::Scope;
+use super::{evaluate_expr, path, Context};
+use crate::common::error::{RenderError, Span};
+use crate::common::value::Value;
+use crate::syntax::ast::{BinOp, Expr, ExprKind, UnOp};
 use rust_decimal::Decimal;
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
-pub(super) fn evaluate_binary(
+pub(super) fn evaluate_binary<M: Meter>(
     op: BinOp,
     lhs: &Expr,
     rhs: &Expr,
     span: Span,
-    input: &Value,
-    lets: &Scopes,
-    this: &Scope,
-) -> Result<Value, RenderError> {
+    ctx: &Context<M>,
+    scope: &Scope,
+) -> Result<Value, M::Err> {
+    // short-circuiting operators decide whether to evaluate the right side
     match op {
-        BinOp::And => {
-            let l = evaluate_expr(lhs, input, lets, this)?;
-            let lb = require_bool(&l, lhs.span)?;
-            if !lb {
-                return Ok(Value::Bool(false));
-            }
-            let r = evaluate_expr(rhs, input, lets, this)?;
-            let rb = require_bool(&r, rhs.span)?;
-            return Ok(Value::Bool(rb));
-        }
-        BinOp::Or => {
-            let l = evaluate_expr(lhs, input, lets, this)?;
-            let lb = require_bool(&l, lhs.span)?;
-            if lb {
-                return Ok(Value::Bool(true));
-            }
-            let r = evaluate_expr(rhs, input, lets, this)?;
-            let rb = require_bool(&r, rhs.span)?;
-            return Ok(Value::Bool(rb));
-        }
-        BinOp::Coalesce => {
-            let l = evaluate_expr(lhs, input, lets, this)?;
-            if matches!(l, Value::Null) {
-                return evaluate_expr(rhs, input, lets, this);
-            }
-            return Ok(l);
-        }
-        _ => {}
-    }
-
-    let l = evaluate_expr(lhs, input, lets, this)?;
-    let r = evaluate_expr(rhs, input, lets, this)?;
-
-    match op {
-        BinOp::Add => arith(&l, &r, span, i64::checked_add, Decimal::checked_add),
-        BinOp::Sub => arith(&l, &r, span, i64::checked_sub, Decimal::checked_sub),
-        BinOp::Mul => arith(&l, &r, span, i64::checked_mul, Decimal::checked_mul),
-        BinOp::Div => div(&l, &r, span),
-        BinOp::Mod => rem(&l, &r, span),
-        BinOp::Eq => Ok(Value::Bool(values_equal(&l, &r))),
-        BinOp::Ne => Ok(Value::Bool(!values_equal(&l, &r))),
-        BinOp::Lt => compare(&l, &r, span).map(|c| Value::Bool(c == Ordering::Less)),
-        BinOp::Le => compare(&l, &r, span).map(|c| Value::Bool(c != Ordering::Greater)),
-        BinOp::Gt => compare(&l, &r, span).map(|c| Value::Bool(c == Ordering::Greater)),
-        BinOp::Ge => compare(&l, &r, span).map(|c| Value::Bool(c != Ordering::Less)),
-        BinOp::And | BinOp::Or | BinOp::Coalesce => unreachable!(),
+        BinOp::And => evaluate_and(lhs, rhs, ctx, scope),
+        BinOp::Or => evaluate_or(lhs, rhs, ctx, scope),
+        BinOp::Coalesce => evaluate_coalesce(lhs, rhs, ctx, scope),
+        _ => evaluate_strict(op, lhs, rhs, span, ctx, scope),
     }
 }
 
-pub(super) fn evaluate_unary(
+fn evaluate_and<M: Meter>(
+    lhs: &Expr,
+    rhs: &Expr,
+    ctx: &Context<M>,
+    scope: &Scope,
+) -> Result<Value, M::Err> {
+    let left = evaluate_expr(lhs, ctx, scope)?;
+    if !require_bool(&left, lhs.span)? {
+        return Ok(Value::Bool(false));
+    }
+    let right = evaluate_expr(rhs, ctx, scope)?;
+    Ok(Value::Bool(require_bool(&right, rhs.span)?))
+}
+
+fn evaluate_or<M: Meter>(
+    lhs: &Expr,
+    rhs: &Expr,
+    ctx: &Context<M>,
+    scope: &Scope,
+) -> Result<Value, M::Err> {
+    let left = evaluate_expr(lhs, ctx, scope)?;
+    if require_bool(&left, lhs.span)? {
+        return Ok(Value::Bool(true));
+    }
+    let right = evaluate_expr(rhs, ctx, scope)?;
+    Ok(Value::Bool(require_bool(&right, rhs.span)?))
+}
+
+fn evaluate_coalesce<M: Meter>(
+    lhs: &Expr,
+    rhs: &Expr,
+    ctx: &Context<M>,
+    scope: &Scope,
+) -> Result<Value, M::Err> {
+    let left = evaluate_expr(lhs, ctx, scope)?;
+    if matches!(left, Value::Null) {
+        return evaluate_expr(rhs, ctx, scope);
+    }
+    Ok(left)
+}
+
+fn evaluate_strict<M: Meter>(
+    op: BinOp,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+    ctx: &Context<M>,
+    scope: &Scope,
+) -> Result<Value, M::Err> {
+    let left = operand(lhs, ctx, scope)?;
+    let right = operand(rhs, ctx, scope)?;
+    Ok(apply_binary(op, &left, &right, span)?)
+}
+
+/// Evaluate a read-only operand; paths stay borrowed, so `a.id == b.id`
+/// copies nothing.
+pub(super) fn operand<'r, M: Meter>(
+    expr: &Expr,
+    ctx: &'r Context<M>,
+    scope: &'r Scope,
+) -> Result<Cow<'r, Value>, M::Err> {
+    match &expr.kind {
+        ExprKind::Path {
+            root,
+            root_span,
+            segments,
+        } => {
+            ctx.meter.charge(1, expr.span)?;
+            path::evaluate_path_cow(root, *root_span, segments, ctx, scope)
+        }
+        _ => evaluate_expr(expr, ctx, scope).map(Cow::Owned),
+    }
+}
+
+fn apply_binary(op: BinOp, left: &Value, right: &Value, span: Span) -> Result<Value, RenderError> {
+    match op {
+        BinOp::Add => arith(left, right, span, i64::checked_add, Decimal::checked_add),
+        BinOp::Sub => arith(left, right, span, i64::checked_sub, Decimal::checked_sub),
+        BinOp::Mul => arith(left, right, span, i64::checked_mul, Decimal::checked_mul),
+        BinOp::Div => div(left, right, span),
+        BinOp::Mod => rem(left, right, span),
+        BinOp::Eq => Ok(Value::Bool(values_equal(left, right))),
+        BinOp::Ne => Ok(Value::Bool(!values_equal(left, right))),
+        BinOp::Lt => compare(left, right, span).map(|order| Value::Bool(order == Ordering::Less)),
+        BinOp::Le => {
+            compare(left, right, span).map(|order| Value::Bool(order != Ordering::Greater))
+        }
+        BinOp::Gt => {
+            compare(left, right, span).map(|order| Value::Bool(order == Ordering::Greater))
+        }
+        BinOp::Ge => compare(left, right, span).map(|order| Value::Bool(order != Ordering::Less)),
+        BinOp::And => Ok(Value::Bool(
+            require_bool(left, span)? && require_bool(right, span)?,
+        )),
+        BinOp::Or => Ok(Value::Bool(
+            require_bool(left, span)? || require_bool(right, span)?,
+        )),
+        BinOp::Coalesce => Ok(if matches!(left, Value::Null) {
+            right.clone()
+        } else {
+            left.clone()
+        }),
+    }
+}
+
+pub(super) fn evaluate_unary<M: Meter>(
     op: UnOp,
     operand: &Expr,
     span: Span,
-    input: &Value,
-    lets: &Scopes,
-    this: &Scope,
-) -> Result<Value, RenderError> {
-    let v = evaluate_expr(operand, input, lets, this)?;
+    ctx: &Context<M>,
+    scope: &Scope,
+) -> Result<Value, M::Err> {
+    let value = evaluate_expr(operand, ctx, scope)?;
+    Ok(apply_unary(op, value, span)?)
+}
+
+fn apply_unary(op: UnOp, value: Value, span: Span) -> Result<Value, RenderError> {
     match op {
-        UnOp::Neg => match v {
+        UnOp::Neg => match value {
             Value::Int(n) => n
                 .checked_neg()
                 .map(Value::Int)
@@ -88,98 +155,90 @@ pub(super) fn evaluate_unary(
                 span,
             }),
         },
-        UnOp::Not => {
-            let b = require_bool(&v, span)?;
-            Ok(Value::Bool(!b))
-        }
+        UnOp::Not => Ok(Value::Bool(!require_bool(&value, span)?)),
     }
 }
 
+/// `+`, `-`, `*`: integers stay integers; any decimal makes a decimal.
 pub(super) fn arith<I, D>(
-    l: &Value,
-    r: &Value,
+    left: &Value,
+    right: &Value,
     span: Span,
     int_op: I,
-    dec_op: D,
+    decimal_op: D,
 ) -> Result<Value, RenderError>
 where
     I: Fn(i64, i64) -> Option<i64>,
     D: Fn(Decimal, Decimal) -> Option<Decimal>,
 {
-    let checked = |opt: Option<Decimal>| {
-        opt.map(Value::Decimal)
+    let checked = |result: Option<Decimal>| {
+        result
+            .map(Value::Decimal)
             .ok_or(RenderError::ArithmeticOverflow { span })
     };
-    match (l, r) {
+    match (left, right) {
         (Value::Int(a), Value::Int(b)) => int_op(*a, *b)
             .map(Value::Int)
             .ok_or(RenderError::ArithmeticOverflow { span }),
-        (Value::Decimal(a), Value::Decimal(b)) => checked(dec_op(*a, *b)),
-        (Value::Int(a), Value::Decimal(b)) => checked(dec_op(Decimal::from(*a), *b)),
-        (Value::Decimal(a), Value::Int(b)) => checked(dec_op(*a, Decimal::from(*b))),
-        _ => Err(RenderError::TypeMismatch {
-            expected: "number",
-            got: format!("{} and {}", l.kind(), r.kind()),
+        (Value::Decimal(a), Value::Decimal(b)) => checked(decimal_op(*a, *b)),
+        (Value::Int(a), Value::Decimal(b)) => checked(decimal_op(Decimal::from(*a), *b)),
+        (Value::Decimal(a), Value::Int(b)) => checked(decimal_op(*a, Decimal::from(*b))),
+        _ => Err(RenderError::type_mismatch(
+            "number",
+            format!("{} and {}", left.kind(), right.kind()),
             span,
-        }),
+        )),
     }
 }
 
-fn div(l: &Value, r: &Value, span: Span) -> Result<Value, RenderError> {
-    let (a, b) = match (l, r) {
-        (Value::Int(a), Value::Int(b)) => (Decimal::from(*a), Decimal::from(*b)),
-        (Value::Decimal(a), Value::Decimal(b)) => (*a, *b),
-        (Value::Int(a), Value::Decimal(b)) => (Decimal::from(*a), *b),
-        (Value::Decimal(a), Value::Int(b)) => (*a, Decimal::from(*b)),
-        _ => {
-            return Err(RenderError::TypeMismatch {
-                expected: "number",
-                got: format!("{} and {}", l.kind(), r.kind()),
-                span,
-            });
-        }
-    };
-    if b.is_zero() {
+/// `/` always produces a decimal, so `7 / 2` is `3.5`.
+fn div(left: &Value, right: &Value, span: Span) -> Result<Value, RenderError> {
+    let (dividend, divisor) = as_decimals(left, right, span)?;
+    if divisor.is_zero() {
         return Err(RenderError::DivideByZero { span });
     }
-    a.checked_div(b)
+    dividend
+        .checked_div(divisor)
         .map(Value::Decimal)
         .ok_or(RenderError::ArithmeticOverflow { span })
 }
 
-fn rem(l: &Value, r: &Value, span: Span) -> Result<Value, RenderError> {
-    // Int % Int stays an Int; any Decimal operand promotes the result.
-    if let (Value::Int(a), Value::Int(b)) = (l, r) {
-        if *b == 0 {
+fn rem(left: &Value, right: &Value, span: Span) -> Result<Value, RenderError> {
+    if let (Value::Int(dividend), Value::Int(divisor)) = (left, right) {
+        if *divisor == 0 {
             return Err(RenderError::DivideByZero { span });
         }
-        return a
-            .checked_rem(*b)
+        return dividend
+            .checked_rem(*divisor)
             .map(Value::Int)
             .ok_or(RenderError::ArithmeticOverflow { span });
     }
-    let (a, b) = match (l, r) {
-        (Value::Decimal(a), Value::Decimal(b)) => (*a, *b),
-        (Value::Int(a), Value::Decimal(b)) => (Decimal::from(*a), *b),
-        (Value::Decimal(a), Value::Int(b)) => (*a, Decimal::from(*b)),
-        _ => {
-            return Err(RenderError::TypeMismatch {
-                expected: "number",
-                got: format!("{} and {}", l.kind(), r.kind()),
-                span,
-            });
-        }
-    };
-    if b.is_zero() {
+    let (dividend, divisor) = as_decimals(left, right, span)?;
+    if divisor.is_zero() {
         return Err(RenderError::DivideByZero { span });
     }
-    a.checked_rem(b)
+    dividend
+        .checked_rem(divisor)
         .map(Value::Decimal)
         .ok_or(RenderError::ArithmeticOverflow { span })
 }
 
-pub(super) fn require_bool(v: &Value, span: Span) -> Result<bool, RenderError> {
-    match v {
+fn as_decimals(left: &Value, right: &Value, span: Span) -> Result<(Decimal, Decimal), RenderError> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => Ok((Decimal::from(*a), Decimal::from(*b))),
+        (Value::Decimal(a), Value::Decimal(b)) => Ok((*a, *b)),
+        (Value::Int(a), Value::Decimal(b)) => Ok((Decimal::from(*a), *b)),
+        (Value::Decimal(a), Value::Int(b)) => Ok((*a, Decimal::from(*b))),
+        _ => Err(RenderError::type_mismatch(
+            "number",
+            format!("{} and {}", left.kind(), right.kind()),
+            span,
+        )),
+    }
+}
+
+pub(super) fn require_bool(value: &Value, span: Span) -> Result<bool, RenderError> {
+    match value {
         Value::Bool(b) => Ok(*b),
         other => Err(RenderError::TypeMismatch {
             expected: "bool",
@@ -189,8 +248,9 @@ pub(super) fn require_bool(v: &Value, span: Span) -> Result<bool, RenderError> {
     }
 }
 
-pub(super) fn values_equal(l: &Value, r: &Value) -> bool {
-    match (l, r) {
+/// `==`: numbers by value across int and decimal; collections element-wise.
+pub(super) fn values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -204,21 +264,22 @@ pub(super) fn values_equal(l: &Value, r: &Value) -> bool {
         (Value::Obj(a), Value::Obj(b)) => {
             a.len() == b.len()
                 && a.iter()
-                    .all(|(k, v)| b.get(k).is_some_and(|bv| values_equal(v, bv)))
+                    .all(|(key, value)| b.get(key).is_some_and(|other| values_equal(value, other)))
         }
         _ => false,
     }
 }
 
-pub(super) fn compare(l: &Value, r: &Value, span: Span) -> Result<Ordering, RenderError> {
-    match (l, r) {
+/// `<`, `<=`, `>`, `>=`: numbers only.
+pub(super) fn compare(left: &Value, right: &Value, span: Span) -> Result<Ordering, RenderError> {
+    match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
         (Value::Decimal(a), Value::Decimal(b)) => Ok(a.cmp(b)),
         (Value::Int(a), Value::Decimal(b)) => Ok(Decimal::from(*a).cmp(b)),
         (Value::Decimal(a), Value::Int(b)) => Ok(a.cmp(&Decimal::from(*b))),
         _ => Err(RenderError::TypeMismatch {
             expected: "comparable numbers",
-            got: format!("{} and {}", l.kind(), r.kind()),
+            got: format!("{} and {}", left.kind(), right.kind()),
             span,
         }),
     }

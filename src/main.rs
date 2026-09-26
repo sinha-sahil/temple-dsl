@@ -47,8 +47,6 @@ fn run_render(template_path: &str, input_path: &str) -> ExitCode {
         }
     };
 
-    // serde_json::Value flows straight in via Into<Value>; converting the
-    // result back emits decimals as exact JSON number tokens.
     let output = match template.render_value(input) {
         Ok(v) => serde_json::Value::from(v),
         Err(e) => {

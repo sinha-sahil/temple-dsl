@@ -1,5 +1,3 @@
-//! The `json` feature — exact conversions between `serde_json::Value` and
-//! `temple_dsl::Value` in both directions, with no f64 detour for decimals.
 #![cfg(feature = "json")]
 
 use rust_decimal::Decimal;

@@ -1,0 +1,15 @@
+{
+  "customer": "ADA LOVELACE",
+  "items": [
+    "WIDGET",
+    "GADGET",
+    "GIZMO"
+  ],
+  "item_count": 3,
+  "subtotal": 34.48,
+  "tax": 2.84,
+  "total": 37.32,
+  "highest": 19.99,
+  "lowest": 4.50,
+  "savings": 3
+}

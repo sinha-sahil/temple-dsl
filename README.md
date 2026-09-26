@@ -6,11 +6,10 @@
 
 ### A small, fast Rust DSL for shaping data — *input in, strongly-typed Rust value out.*
 
-[![CI](https://github.com/sinha-sahil/temple-dsl/actions/workflows/release.yml/badge.svg)](https://github.com/sinha-sahil/temple-dsl/actions/workflows/release.yml)
-[![Rust 2021](https://img.shields.io/badge/rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![CI](https://github.com/sinha-sahil/temple-dsl/actions/workflows/ci.yml/badge.svg)](https://github.com/sinha-sahil/temple-dsl/actions/workflows/ci.yml)
+[![MSRV 1.80](https://img.shields.io/badge/MSRV-1.80-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/github/v/tag/sinha-sahil/temple-dsl?label=version&color=5B8DEF)](https://github.com/sinha-sahil/temple-dsl/tags)
-![Tests](https://img.shields.io/badge/tests-267%20passing-3FB950)
-![Coverage](https://img.shields.io/badge/coverage-86%25-3FB950)
+![Coverage](https://img.shields.io/badge/coverage-87%25-3FB950)
 ![Decimals](https://img.shields.io/badge/decimals-exact-3FB950)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-5B8DEF)
 
@@ -61,10 +60,10 @@ Compile once, render against millions of inputs — into your
 `#[derive(Deserialize)]` struct, a `serde_json::Value`, or a dynamic `Value`.
 
 > [!NOTE]
-> **Pre-1.0, production-shaped.** The language, API, and author tooling are
-> complete (milestones 1–8 of 9); 267 tests at ~86% line coverage, benchmarks,
-> a CLI, and CI. The one open milestone is a [web editor component](M9-EDITOR.md).
-> Expect breaking changes only across pre-1.0 versions.
+> **Pre-1.0, production-shaped.** The language, API and author tooling are
+> complete: a broad test suite, a compatibility gate against the last
+> published version, benchmarks, a CLI and CI. Breaking changes happen only across
+> pre-1.0 minor versions and are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -190,13 +189,13 @@ plus resolver collection — and each error renders as an underlined snippet wit
 line/column and a *did-you-mean* hint when a name is a near-miss:
 
 ```text
-error: unknown identifier 'inputt' — did you mean `input`?
+error: unknown identifier `inputt` — did you mean `input`?
   --> 2:15
   |
 2 |   "total": {{ inputt.cart.subtotal }},
   |               ^^^^^^
 
-error: unknown function 'rouns' — did you mean `round`?
+error: unknown function `rouns` — did you mean `round`?
   --> 3:15
   |
 3 |   "tier":  {{ rouns(this.total) }}
@@ -266,11 +265,12 @@ Tree-walking evaluator, measured with `cargo bench` (Criterion, release):
 
 | Benchmark | Time |
 | --- | ---: |
-| `compile_small` — 3-field template | ~0.8 µs |
-| `compile_big` — ~30 fields, 4 levels deep | ~8 µs |
-| `render_small` | ~0.5 µs |
-| `render_big` — 30 fields, decimals, struct round-trip | ~5.5 µs |
-| compile + render — cold path | ~1.4 µs |
+| `compile_small` — 3-field template | ~0.7 µs |
+| `compile_big` — ~30 fields, 4 levels deep | ~7 µs |
+| `render_small` | ~0.34 µs |
+| `render_big` — 30 fields, decimals, struct round-trip | ~3.8 µs |
+| `render_lambdas` — filter, map and any over 200 items | ~0.95 ms |
+| compile + render — cold path | ~1.1 µs |
 
 Render cost scales with template size **plus the input elements a render
 visits** — a large *passive* input subtree adds nothing. A `let … in …` binding
@@ -288,7 +288,7 @@ The crate is built around a **no-panic guarantee**: `compile`, `render`, and
 - **Enforced structurally** — checked arithmetic everywhere, parser depth cap,
   1 MiB source cap, render-time value-depth cap, and an iterative `Drop` so even
   dropping a pathologically deep value cannot overflow the stack.
-- **268 tests, ~86% line coverage** — feature-named suites plus a kitchen-sink
+- **Tested broadly** — feature-named suites plus a kitchen-sink
   test that exercises *every* operator, method, builtin, and structural feature
   in one template, asserted value-exactly and pushed through the blob and
   formatter round-trips.
@@ -317,15 +317,16 @@ Temple needs four things at once. Existing crates each miss at least one:
 
 ---
 
-## Status & roadmap
+## Status
 
-The language, API, and author tooling are **complete**. The single remaining
-milestone is **M9 — a web editor component**: a browser widget that compiles
-the same engine to WASM and provides intellisense, inline diagnostics, and
-format-on-save out of the box. Plan: [`M9-EDITOR.md`](M9-EDITOR.md).
+The language, API and author tooling are complete. Temple also has an
+embedding API (`ExprUnit`, `TemplateUnit`, `Names`, `Env`, `Budget`) for host
+languages that put temple expressions inside their own syntax, and it builds
+for `wasm32-wasip1`. Not built yet: a web editor component on top of that
+build, with intellisense, inline diagnostics and format-on-save.
 
 <details>
-<summary><b>Full capability matrix</b> — milestones 1–8 of 9 done</summary>
+<summary><b>Full capability matrix</b></summary>
 
 <br>
 
@@ -355,7 +356,8 @@ format-on-save out of the box. Plan: [`M9-EDITOR.md`](M9-EDITOR.md).
 | `to_bytes` / `from_bytes` — versioned compiled blob, reload without reparsing | ✅ |
 | `Template::format` — canonical, idempotent pretty-printer | ✅ |
 | Diagnostics — multi-error reporting with parser recovery, rustc-style underlined snippets, did-you-mean | ✅ |
-| **Milestone 9** — web editor component (intellisense, inline diagnostics, format-on-save) | 🟡 planned |
+| Embedding API — parse, check and evaluate one expression or value inside a host language, under a work budget | ✅ |
+| Web editor component (intellisense, inline diagnostics, format-on-save) | 🟡 not yet |
 
 </details>
 
@@ -365,27 +367,30 @@ format-on-save out of the box. Plan: [`M9-EDITOR.md`](M9-EDITOR.md).
 
 | Path | What's there |
 | --- | --- |
-| [`src/`](src/) | The library + the feature-gated `temple` CLI binary |
-| [`DESIGN.md`](DESIGN.md) | Full language spec, decisions, open questions |
-| [`IMPLEMENTATION.md`](IMPLEMENTATION.md) | As-built map: file layout, sequence diagram, design choices |
-| [`M9-EDITOR.md`](M9-EDITOR.md) | Plan for the milestone-9 web editor component |
-| [`CAPABILITY-GAPS.md`](CAPABILITY-GAPS.md) | The feature-expansion record — what was added and why |
-| [`FAQ.md`](FAQ.md) | How the engine actually works inside |
+| [`src/`](src/) | The library and the feature-gated `temple` CLI; [`ARCHITECTURE.md`](ARCHITECTURE.md) maps it |
+| [`DESIGN.md`](DESIGN.md) | The language: format, expressions, values, guarantees, decisions |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Where the code for each part lives, and the rules that hold it together |
+| [`FAQ.md`](FAQ.md) | How the engine works inside, question by question |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Building, the checks CI runs, the compatibility gate |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each version |
 | [`samples/`](samples/) | Canonical `.temple` templates, one per pattern (compile-tested) |
 | [`examples/`](examples/) | Runnable Rust demos against the public API |
+| [`tests/`](tests/) | The test suite; `tests/compat/` holds the compatibility goldens |
 | [`benches/`](benches/) | Criterion benchmark suite |
 | [`e2e/`](e2e/) | Out-of-crate end-to-end (Postgres) harness |
 
 ## Developing
 
 ```bash
-cargo test --all-features     # full suite (267 tests)
+cargo test --all-features     # full suite
 cargo bench                   # Criterion benchmarks
 cargo llvm-cov --all-features # coverage report
 ```
 
-`cargo fmt` + `cargo clippy -D warnings` are enforced by a pre-commit hook
-(installed automatically via `cargo-husky`) and by CI on the release branch.
+Rust 1.80 or newer. `cargo fmt` and `cargo clippy -D warnings` are enforced
+by a pre-commit hook (installed automatically via `cargo-husky`) and by CI on
+every push and pull request, which also builds the docs, checks the MSRV and
+builds for `wasm32-wasip1`. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
