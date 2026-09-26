@@ -1,12 +1,10 @@
 # Temple — Design
 
 > [!NOTE]
-> **The design — now realized.** This is the source of truth for what Temple
-> *is*; milestones 1–8 of 9 implement it, including `format` and underlined
-> diagnostics. See [`IMPLEMENTATION.md`](IMPLEMENTATION.md) for the as-built map
-> and [`README.md`](README.md) for status. Everything here is settled unless
-> flagged under [§10 Open question](#10-open-question). The remaining milestone
-> (9) is a web editor component — see [`M9-EDITOR.md`](M9-EDITOR.md).
+> This is the source of truth for what Temple *is*. Everything here is
+> implemented and settled unless flagged under
+> [§10 Open question](#10-open-question). [`ARCHITECTURE.md`](ARCHITECTURE.md)
+> maps the design onto the code; [`README.md`](README.md) has status and usage.
 
 ## Contents
 
@@ -592,13 +590,11 @@ iteration: the `map` / `filter` / `fold` collection methods
 | `indexmap` | order-preserving maps for objects |
 | `serde` | AST serialize/deserialize (the blob) + typed result deserialization |
 | `ciborium` | compiled-blob format (CBOR — self-describing) |
-| `serde_json` | optional (`cli` feature) — JSON I/O for the `temple` binary |
+| `serde_json` | optional (`json` and `cli` features) — exact conversions to and from `serde_json::Value`, and JSON I/O for the `temple` binary |
 | `criterion` | benchmarking (dev) |
 | *(parser)* | hand-written recursive descent — no parser crate |
 
-Size: ~4,000 lines of Rust (the hand-written parser is ~1,600 of them).
-
-### Roadmap
+### Built and not built
 
 - [x] Parser and AST — with source spans on every node
 - [x] `Value` and the evaluator
@@ -611,8 +607,9 @@ Size: ~4,000 lines of Rust (the hand-written parser is ~1,600 of them).
 - [x] `to_bytes` / `from_bytes` — the compiled blob
 - [x] `render` and serde deserialization of results
 - [x] `criterion` benchmark suite
-- [x] `format`, parser error recovery, source-underlined diagnostics (line/column, did-you-mean) — milestone 8
-- [ ] web editor component — intellisense, inline diagnostics + warnings, format-on-save ([M9](M9-EDITOR.md))
+- [x] `format`, parser error recovery, source-underlined diagnostics (line/column, did-you-mean)
+- [x] The embedding API — one expression or value at a time, inside a host language, under a work budget
+- [ ] Web editor component — intellisense, inline diagnostics and warnings, format-on-save, on top of the wasm build
 
 ### The name
 

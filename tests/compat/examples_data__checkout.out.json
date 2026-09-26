@@ -1,0 +1,17 @@
+{
+  "count": 4,
+  "item_names": [
+    "widget",
+    "gadget",
+    "gizmo",
+    "thing"
+  ],
+  "discounted": [
+    "widget",
+    "gizmo"
+  ],
+  "first_item": "widget",
+  "total": 50.47,
+  "average": 12.6175,
+  "free_shipping": true
+}

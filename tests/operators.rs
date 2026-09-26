@@ -1,6 +1,3 @@
-//! Operators — arithmetic, comparison, logical, unary `-`/`!`, ternary `?:`,
-//! and `when` guards.
-
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use temple_dsl::{Template, Value};

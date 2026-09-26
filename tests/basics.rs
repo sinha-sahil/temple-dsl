@@ -1,6 +1,3 @@
-//! Foundational output — value literals, bare holes, path access, nested
-//! object/array shapes, comments/trailing commas, and the typed round-trip.
-
 use indexmap::IndexMap;
 use rust_decimal::Decimal;
 use serde::Deserialize;

@@ -1,0 +1,5 @@
+[
+  {{ input.point.x }},
+  {{ input.point.y }},
+  {{ input.point?.z ?? 0 }}
+]

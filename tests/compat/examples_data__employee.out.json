@@ -1,0 +1,7 @@
+{
+  "name": "Ada Lovelace",
+  "is_admin": false,
+  "level": "senior",
+  "greeting": "Hi there",
+  "show_dashboard": true
+}

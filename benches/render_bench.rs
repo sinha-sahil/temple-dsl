@@ -3,8 +3,6 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use temple_dsl::{Template, Value};
 
-// -------- small --------
-
 const SMALL_TEMPLATE: &str = r#"{
     "id":   {{ input.id }},
     "name": {{ input.name }},
@@ -28,8 +26,6 @@ fn small_input() -> Value {
         ("tag", Value::Str("staff".into())),
     ])
 }
-
-// -------- big --------
 
 const BIG_TEMPLATE: &str = r#"{
     "request_id":      {{ input.request_id }},
@@ -204,7 +200,40 @@ fn big_input() -> Value {
     ])
 }
 
-// -------- benchmarks --------
+const LAMBDA_TEMPLATE: &str = r#"{
+    "total":  {{ input.items.map(i -> i.price * i.qty).sum() }},
+    "open":   {{ input.items.filter(i -> i.status == 'open').len() }},
+    "tagged": {{ input.items.filter(i -> input.tags.contains(i.tag)).map(i -> i.id) }},
+    "shared": {{ input.items.filter(i -> input.items.any(j -> j.id != i.id && j.tag == i.tag)).len() }}
+}"#;
+
+fn lambda_input() -> Value {
+    let items = (0..200)
+        .map(|i| {
+            Value::obj([
+                ("id", Value::Int(i)),
+                ("price", Value::Int(100 + i % 7)),
+                ("qty", Value::Int(1 + i % 3)),
+                (
+                    "status",
+                    Value::from(if i % 2 == 0 { "open" } else { "closed" }),
+                ),
+                ("tag", Value::from(format!("t{}", i % 50).as_str())),
+            ])
+        })
+        .collect();
+    Value::obj([
+        ("items", Value::Arr(items)),
+        (
+            "tags",
+            Value::Arr(vec![
+                Value::from("t1"),
+                Value::from("t7"),
+                Value::from("t9"),
+            ]),
+        ),
+    ])
+}
 
 fn benches(c: &mut Criterion) {
     c.bench_function("compile_small", |b| {
@@ -234,6 +263,16 @@ fn benches(c: &mut Criterion) {
             |input| {
                 let _: BigOut = big_t.render(input).unwrap();
             },
+            BatchSize::SmallInput,
+        )
+    });
+
+    let lambda_t = Template::compile(LAMBDA_TEMPLATE).unwrap();
+    let lambda_in = lambda_input();
+    c.bench_function("render_lambdas", |b| {
+        b.iter_batched(
+            || lambda_in.clone(),
+            |input| lambda_t.render_value(input).unwrap(),
             BatchSize::SmallInput,
         )
     });

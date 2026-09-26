@@ -1,7 +1,3 @@
-//! Structural features — conditional field omission (`"k"?:`), computed object
-//! keys (`{ [expr]: v }`), object indexing, `let … in …`, and method/index
-//! chains on any expression (not just identifier paths).
-
 use temple_dsl::{Template, Value};
 
 fn render(src: &str, input: Value) -> Value {
@@ -25,8 +21,6 @@ fn render_fails(src: &str, input: Value) -> bool {
 fn compile_fails(src: &str) -> bool {
     Template::compile(src).is_err()
 }
-
-// ── conditional field omission ──
 
 #[test]
 fn omits_null_output_key() {
@@ -55,8 +49,6 @@ fn omits_in_object_literal() {
     assert_eq!(out, Value::obj([("a", Value::Int(1))]));
 }
 
-// ── computed object keys ──
-
 #[test]
 fn computed_object_key() {
     let out = render(
@@ -83,7 +75,6 @@ fn duplicate_computed_key_is_a_render_error() {
         r#"{{ { [input.k1]: 1, [input.k2]: 2 } }}"#,
         Value::obj([("k1", Value::from("x")), ("k2", Value::from("x"))])
     ));
-    // distinct keys stay fine
     assert!(!render_fails(r#"{{ { "a": 1, ["b"]: 2 } }}"#, Value::Null));
 }
 
@@ -104,16 +95,12 @@ fn group_by_via_fold_merge_dynamic_key() {
     );
 }
 
-// ── object indexing ──
-
 #[test]
 fn object_index_strict() {
     let i = Value::obj([("o", Value::obj([("a", Value::Int(1))]))]);
     assert_eq!(render(r#"{{ input.o["a"] }}"#, i.clone()), Value::Int(1));
     assert!(render_fails(r#"{{ input.o["missing"] }}"#, i)); // strict: errors when absent
 }
-
-// ── let … in … ──
 
 #[test]
 fn let_in_basic_and_scoped() {
@@ -169,8 +156,6 @@ fn let_in_body_can_read_this() {
     );
 }
 
-// ── postfix on any expression ──
-
 #[test]
 fn methods_chain_on_non_identifier_base() {
     assert_eq!(
@@ -183,8 +168,6 @@ fn methods_chain_on_non_identifier_base() {
     );
     assert_eq!(eval(r#"{{ ([1, 2].concat([3])).len() }}"#), Value::Int(3));
 }
-
-// ── format round-trips the new syntax ──
 
 #[test]
 fn format_is_stable_for_new_syntax() {

@@ -1,0 +1,15 @@
+{
+  "id": 42,
+  "name": "Ada Lovelace",
+  "email": "ada@example.com",
+  "address": {
+    "country": "UK",
+    "city": "London"
+  },
+  "tags": [
+    "premium",
+    "researcher",
+    "active"
+  ],
+  "vip": true
+}

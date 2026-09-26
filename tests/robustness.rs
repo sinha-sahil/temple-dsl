@@ -1,5 +1,3 @@
-//! No-panic guarantee: caps, overflow, and diagnostics that must never abort.
-
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use temple_dsl::{CompileError, RenderError, Template, Value};
@@ -37,8 +35,36 @@ fn deep_output_nesting_rejected_not_aborted() {
 }
 
 #[test]
+fn long_chains_still_compile() {
+    // 0.3.0 had no tree-depth limit; chains of 83 links also loaded back
+    // from a blob there
+    for src in [
+        format!("{{{{ {}1 }}}}", "false ? 0 : ".repeat(83)),
+        format!("{{{{ {}1 }}}}", "null ?? ".repeat(83)),
+    ] {
+        let template = Template::compile(&src).unwrap();
+        assert_eq!(template.render_value(Value::Null).unwrap(), Value::Int(1));
+        let loaded = Template::from_bytes(&template.to_bytes()).unwrap();
+        assert_eq!(loaded.render_value(Value::Null).unwrap(), Value::Int(1));
+    }
+    let sum = Template::compile(&format!("{{{{ 1{} }}}}", " + 1".repeat(198))).unwrap();
+    assert_eq!(sum.render_value(Value::Null).unwrap(), Value::Int(199));
+}
+
+#[test]
+fn overlong_chains_rejected_not_aborted() {
+    for src in [
+        format!("{{{{ 1{} }}}}", " + 1".repeat(50_000)),
+        format!("{{{{ {}1 }}}}", "false ? 0 : ".repeat(50_000)),
+        format!("{{{{ {}1 }}}}", "null ?? ".repeat(50_000)),
+    ] {
+        let err = Template::compile(&src).expect_err("should reject, not abort");
+        assert!(matches!(err.first(), Some(CompileError::TooDeep { .. })));
+    }
+}
+
+#[test]
 fn moderate_nesting_still_compiles() {
-    // Well within the cap: must NOT be rejected.
     let src = format!("{{{{ {}1{} }}}}", "(".repeat(20), ")".repeat(20));
     assert!(Template::compile(&src).is_ok());
 }

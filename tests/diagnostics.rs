@@ -1,6 +1,3 @@
-//! Milestone 8 — `format`, snippet diagnostics, did-you-mean, and multi-error
-//! reporting.
-
 use temple_dsl::{CompileError, Template, Value};
 
 fn fmt(src: &str) -> String {
@@ -136,7 +133,7 @@ fn joined(errs: &[CompileError]) -> String {
 #[test]
 fn suggests_for_unknown_identifier() {
     let msg = joined(&errs(r#"{ "x": {{ inputt.id }} }"#));
-    assert!(msg.contains("unknown identifier 'inputt'"), "{msg}");
+    assert!(msg.contains("unknown identifier `inputt`"), "{msg}");
     assert!(msg.contains("did you mean `input`?"), "{msg}");
 }
 
@@ -157,7 +154,7 @@ fn suggests_for_unknown_this_key() {
 #[test]
 fn no_suggestion_when_nothing_is_close() {
     let msg = joined(&errs(r#"{ "x": {{ zzzzzz.id }} }"#));
-    assert!(msg.contains("unknown identifier 'zzzzzz'"), "{msg}");
+    assert!(msg.contains("unknown identifier `zzzzzz`"), "{msg}");
     assert!(!msg.contains("did you mean"), "{msg}");
 }
 
@@ -167,7 +164,7 @@ fn report_renders_underlined_snippet() {
     let e = errs(src);
     let report = e[0].report(src);
     assert!(
-        report.starts_with("error: unknown identifier 'inputt'"),
+        report.starts_with("error: unknown identifier `inputt`"),
         "{report}"
     );
     assert!(report.contains("--> 2:"), "{report}");
@@ -184,8 +181,8 @@ fn report_all_lists_every_resolver_error() {
         "resolver should report both unknown identifiers"
     );
     let report = CompileError::report_all(src, &e);
-    assert!(report.contains("unknown identifier 'foo'"), "{report}");
-    assert!(report.contains("unknown identifier 'bar'"), "{report}");
+    assert!(report.contains("unknown identifier `foo`"), "{report}");
+    assert!(report.contains("unknown identifier `bar`"), "{report}");
 }
 
 #[test]
@@ -249,8 +246,6 @@ fn recovery_resyncs_past_comments_in_holes() {
     assert!(Template::compile(src).is_err());
 }
 
-// ── newline-separated entries (DESIGN §2: commas optional) ──
-
 #[test]
 fn newline_separates_object_entries() {
     let t = Template::compile("{ \"a\": 1\n  \"b\": 2 }").expect("compile");
@@ -295,7 +290,8 @@ fn all_shipped_samples_compile() {
     // Every .temple under samples/ and examples/data/ must parse — the repo
     // never ships a template its own compiler rejects.
     for dir in ["samples", "examples/data"] {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
+        let dir = format!("{}/{dir}", env!("CARGO_MANIFEST_DIR"));
+        for entry in std::fs::read_dir(&dir).expect("read dir") {
             let path = entry.expect("entry").path();
             if path.extension().is_some_and(|e| e == "temple") {
                 let src = std::fs::read_to_string(&path).expect("read");
@@ -308,8 +304,6 @@ fn all_shipped_samples_compile() {
         }
     }
 }
-
-// ── format round-trip hardening ──
 
 #[test]
 fn format_parenthesizes_numeric_literal_bases() {
@@ -351,8 +345,6 @@ fn format_enforces_the_source_size_cap() {
         Err(ref e) if matches!(e[0], CompileError::TooLarge { .. })
     ));
 }
-
-// ── compile-time rejection of nonsense literal access ──
 
 #[test]
 fn field_access_on_scalar_literals_is_a_compile_error() {

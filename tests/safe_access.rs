@@ -1,5 +1,3 @@
-//! Safe access — optional chaining `?.` and nullish coalescing `??`.
-
 use serde::Deserialize;
 use temple_dsl::{RenderError, Template, Value};
 

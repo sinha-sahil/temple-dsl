@@ -1,0 +1,16 @@
+{
+  "summary": "Ada ordered 2 item(s)",
+  "lines": [
+    {
+      "name": "widget",
+      "total": 59.94
+    },
+    {
+      "name": "gadget",
+      "total": 29.00
+    }
+  ],
+  "subtotal": 88.94,
+  "any_bulk": true,
+  "receipt": "Total due: 88.94"
+}

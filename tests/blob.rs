@@ -1,6 +1,3 @@
-//! Compiled-blob round-trip (`to_bytes` / `from_bytes`) — corruption and
-//! version handling.
-
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use temple_dsl::{LoadError, Template, Value};

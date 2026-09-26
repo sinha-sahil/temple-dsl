@@ -1,6 +1,3 @@
-//! `render_value` returns the dynamic `Value` directly (no serde round-trip).
-//! Rendering into `Value` via `render::<Value>` is intentionally a compile error.
-
 use rust_decimal::Decimal;
 use temple_dsl::{Template, Value};
 
@@ -50,7 +47,6 @@ fn object_shape_and_order() {
         out,
         Value::obj([("z", Value::Int(9)), ("a", Value::Int(8))])
     );
-    // declared key order preserved
     if let Value::Obj(o) = &out {
         let keys: Vec<&str> = o.keys().map(|s| s.as_str()).collect();
         assert_eq!(keys, vec!["z", "a"]);
@@ -61,7 +57,6 @@ fn object_shape_and_order() {
 
 #[test]
 fn matches_typed_render() {
-    // render_value and render::<T> agree on the same template.
     let src = r#"{ "total": {{ input.a + input.b }} }"#;
     let input = Value::obj([("a", Value::Int(3)), ("b", Value::Int(4))]);
     let t = Template::compile(src).unwrap();
